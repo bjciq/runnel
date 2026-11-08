@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build:
     name: Build & Package
-    runs-on: [self-hosted, instabox]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -48,14 +48,11 @@ jobs:
           echo "is_official=${IS_OFFICIAL}" >> "$GITHUB_OUTPUT"
           echo "Build Version: ${VER} (Official: ${IS_OFFICIAL})"
 
-      - name: Setup Android SDK Cache & Licenses
-        run: |
-          export ANDROID_HOME="/data/home/android-sdk"
-          export ANDROID_SDK_ROOT="/data/home/android-sdk"
-          mkdir -p "$ANDROID_HOME/licenses"
-          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_HOME/licenses/android-sdk-license"
-          echo "84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          chmod +x gradlew
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
 
       - name: Restore Signing Key
         env:
@@ -67,15 +64,13 @@ jobs:
           fi
 
       - name: Run Unit Tests
-        env:
-          ANDROID_HOME: /data/home/android-sdk
         run: |
+          chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Build Optimized Release APK
         id: build
         env:
-          ANDROID_HOME: /data/home/android-sdk
           RUNNEL_KEYSTORE_PASSWORD: ${{ secrets.RUNNEL_KEYSTORE_PASSWORD }}
         run: |
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
