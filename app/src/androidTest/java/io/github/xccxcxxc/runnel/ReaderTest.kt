@@ -203,6 +203,19 @@ class ReaderTest {
             throw error
         }
         android.util.Log.i("ReaderPerf", "clickToPaintMs=${android.os.SystemClock.elapsedRealtime() - openedAt}")
+        // 首次出现还不够：邻页预取触发重组之后，正文也必须持续可见，且仍是同一文档。
+        js("window.__paintToken='first-document'")
+        val stableUntil = android.os.SystemClock.elapsedRealtime() + 2_000
+        while (android.os.SystemClock.elapsedRealtime() < stableUntil) {
+            val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            try {
+                val pixel = bitmap.getPixel(x.coerceIn(0, bitmap.width - 1), y.coerceIn(0, bitmap.height - 1))
+                assertTrue("正文首次显示后再次消失：${Integer.toHexString(pixel)}",
+                    kotlin.math.abs(Color.red(pixel) - 36) <= 3 && kotlin.math.abs(Color.green(pixel) - 196) <= 3 && kotlin.math.abs(Color.blue(pixel) - 142) <= 3)
+            } finally { bitmap.recycle() }
+            Thread.sleep(50)
+        }
+        assertEquals("首帧之后不能重载正文", "\"first-document\"", js("window.__paintToken"))
     }
 
     /** 长按正文里的图片：弹出“保存到相册 / 分享图片”（2026-10-24，以前长按没反应）；长按文字不弹。 */
