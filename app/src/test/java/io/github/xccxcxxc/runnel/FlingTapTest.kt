@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -19,6 +21,7 @@ import io.github.xccxcxxc.runnel.data.Settings
 import io.github.xccxcxxc.runnel.ui.components.RunnelIcons
 import io.github.xccxcxxc.runnel.ui.components.SwipeAction
 import io.github.xccxcxxc.runnel.ui.components.SwipeRow
+import io.github.xccxcxxc.runnel.ui.components.LargeTitleList
 import io.github.xccxcxxc.runnel.ui.components.pressHighlight
 import io.github.xccxcxxc.runnel.ui.theme.RunnelTheme
 import io.github.xccxcxxc.runnel.ui.theme.listFling
@@ -65,6 +68,40 @@ class FlingTapTest {
         rule.onNodeWithTag("list").performTouchInput { swipeUp(durationMillis = 80) }
         rule.mainClock.advanceTimeBy(150)
         assertTrue("fling should be running", listState.isScrollInProgress)
+        rule.onNodeWithTag("list").performTouchInput {
+            down(center)
+            advanceEventTime(60)
+            up()
+        }
+        rule.mainClock.advanceTimeBy(1000)
+        assertEquals(emptyList<Int>(), clicked)
+    }
+
+    /** 与文章列表相同的预组合窗口、分组行和下拉刷新容器，也必须先停住再允许点文章。 */
+    @OptIn(ExperimentalFoundationApi::class)
+    @Test
+    fun tapDuringFlingInCachedGroupedListOnlyStops() {
+        rule.mainClock.autoAdvance = false
+        rule.setContent {
+            RunnelTheme(Settings()) {
+                listState = rememberLazyListState(cacheWindow = LazyLayoutCacheWindow(ahead = 720.dp, behind = 240.dp))
+                LargeTitleList("文章", listState, listModifier = Modifier.testTag("list"), onRefresh = {}) {
+                    items(300, key = { it }, contentType = { if (it % 4 == 0) "header" else "article" }) { i ->
+                        if (i % 4 == 0) {
+                            Box(Modifier.fillMaxWidth().height(28.dp))
+                        } else {
+                            SwipeRow(start = SwipeAction(RunnelIcons.Circle, Color.Blue) {}, end = SwipeAction(RunnelIcons.Star, Color.Yellow) {}) {
+                                Box(Modifier.fillMaxWidth().height((70 + i % 3 * 25).dp).pressHighlight(onLongClick = {}) { clicked += i })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        rule.mainClock.advanceTimeBy(100)
+        rule.onNodeWithTag("list").performTouchInput { swipeUp(durationMillis = 80) }
+        rule.mainClock.advanceTimeBy(150)
+        assertTrue("点按之前列表必须仍在惯性滚动", listState.isScrollInProgress)
         rule.onNodeWithTag("list").performTouchInput {
             down(center)
             advanceEventTime(60)
