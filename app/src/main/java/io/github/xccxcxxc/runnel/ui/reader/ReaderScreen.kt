@@ -98,10 +98,12 @@ import io.github.xccxcxxc.runnel.ui.ArticleActions
 import io.github.xccxcxxc.runnel.ui.theme.Runnel
 import io.github.xccxcxxc.runnel.ui.theme.Motion
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
@@ -134,7 +136,12 @@ private class ScrollRestore(var target: Int) {
 class ReaderState(private val graph: AppGraph, private val account: AccountSession, private val scope: CoroutineScope) {
     val accountId: String get() = account.id
 
-    private val cache = LinkedHashMap<Long, ReaderArticle>(16, 0.75f, true)
+    private val cache = ReaderArticleCache(scope) { account.repo.reader(it) }
+    /** 首篇正文首帧就绪后再预取邻页，避免冷启动时三个 WebView 和多次查询抢占当前文章。 */
+    var canPrefetch by mutableStateOf(false)
+        private set
+
+    fun onCurrentPagePainted() { canPrefetch = true }
     val fullText = mutableStateMapOf<Long, String>()
     val showFull = mutableStateMapOf<Long, Boolean>()
     val loadingFull = mutableStateMapOf<Long, Boolean>()
@@ -169,11 +176,8 @@ class ReaderState(private val graph: AppGraph, private val account: AccountSessi
     }
 
     suspend fun load(id: Long): ReaderArticle? {
-        cache[id]?.let { return it }
-        val a = account.repo.reader(id) ?: return null
-        cache[id] = a
-        if (cache.size > 24) cache.remove(cache.keys.first())
-        a.fullHtml?.let { fullText[id] = it }
+        val a = cache.load(id) ?: return null
+        a.fullHtml?.let { if (id !in fullText) fullText[id] = it }
         return a
     }
 
@@ -320,8 +324,13 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
         val current = pagerState.currentPage.coerceIn(0, session.ids.lastIndex)
         val currentId = session.ids[current]
         val article by produceState<ReaderArticle?>(null, currentId) { value = state.load(currentId) }
-        val prevTitle by produceState<String?>(null, current) { value = session.ids.getOrNull(current - 1)?.let { state.load(it)?.title } }
-        val nextTitle by produceState<String?>(null, current) { value = session.ids.getOrNull(current + 1)?.let { state.load(it)?.title } }
+        val prefetch = state.canPrefetch
+        val prevTitle by produceState<String?>(null, current, prefetch) {
+            value = if (prefetch) session.ids.getOrNull(current - 1)?.let { state.load(it)?.title } else null
+        }
+        val nextTitle by produceState<String?>(null, current, prefetch) {
+            value = if (prefetch) session.ids.getOrNull(current + 1)?.let { state.load(it)?.title } else null
+        }
 
         PullHint(
             icon = RunnelIcons.PullChevron,
@@ -415,20 +424,29 @@ private fun PullHint(icon: ImageVector, label: String, title: String?, progress:
 @Composable
 private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settings: Settings, topPad: Int, bottomPad: Int) {
     val colors = Runnel.colors
-    // 当前页立即加载；相邻页延后一点，避免进入阅读页的瞬间同时加载三页卡住主线程
-    var ready by remember { mutableStateOf(isCurrent) }
-    LaunchedEffect(isCurrent) {
-        if (!isCurrent && !ready) delay(400)
-        ready = true
+    // 当前页立即加载；首篇正文准备好之后才开始邻页的查库、组合和 WebView 创建。
+    var prepared by remember { mutableStateOf(isCurrent) }
+    val prefetch = state.canPrefetch
+    LaunchedEffect(isCurrent, prefetch) {
+        if (isCurrent) prepared = true
+        else if (prefetch && !prepared) {
+            delay(400)
+            prepared = true
+        }
+    }
+    if (!isCurrent && !prepared) {
+        Box(Modifier.fillMaxSize().background(colors.background))
+        return
     }
     val article by produceState<ReaderArticle?>(null, id) { value = state.load(id) }
     val full = state.showFull[id] == true
     val body = (if (full) state.fullText[id] else null) ?: article?.html.orEmpty()
     // 上下留白不算进 key：全屏看视频时系统栏隐藏、屏幕转横，留白跟着变，重新载入会把播放器踢出全屏（转屏也会丢掉正文状态），
     // 只用脚本改 CSS 变量
-    val html = remember(article, body, settings, colors, ready) {
-        if (!ready) null else article?.let { ReaderHtml.build(it, body, settings, colors, topPad, bottomPad) }
-    }
+    val html = produceState<String?>(null, article, body, settings, colors) {
+        val loaded = article ?: return@produceState
+        value = withContext(Dispatchers.Default) { ReaderHtml.build(loaded, body, settings, colors, topPad, bottomPad) }
+    }.value
     LaunchedEffect(topPad, bottomPad) {
         state.webViews[id]?.evaluateJavascript(ReaderHtml.paddingScript(topPad, bottomPad), null)
     }
@@ -510,7 +528,9 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
                     }
                 }
                 if (html != null) {
-                    WebViewPool.loadArticle(view, html, article?.url ?: "https://runnel.invalid/")
+                    WebViewPool.loadArticle(view, html, article?.url ?: "https://runnel.invalid/") {
+                        if (current) state.onCurrentPagePainted()
+                    }
                     restore.parked = false
                 }
             },

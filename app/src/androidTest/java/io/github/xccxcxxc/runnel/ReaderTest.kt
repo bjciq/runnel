@@ -73,6 +73,7 @@ class ReaderTest {
     private val graph get() = Graph.get()
     private lateinit var account: AccountSession
     private val original = "https://ex.com/post?id=1&x=2"
+    private var openedAt = 0L
 
     @Before
     fun setUp() {
@@ -112,10 +113,11 @@ class ReaderTest {
         rule.waitUntilAtLeastOneExists(hasText("测试源"), 30_000)
         rule.onNodeWithText("测试源").performClick()
         rule.waitUntilAtLeastOneExists(hasText("阅读页测试文章"), 15_000)
+        openedAt = android.os.SystemClock.elapsedRealtime()
         rule.onNodeWithText("阅读页测试文章").performClick()
         rule.waitUntilAtLeastOneExists(hasTestTag("reader_pager"), 10_000)
-        // 页面载入完成、标题链接已经排好版
-        waitFor { js("document.readyState=='complete' && !!document.querySelector('a.original') && document.querySelector('h1.title').getBoundingClientRect().height>0") == "true" }
+        // 正文 DOM 和标题已排版即可；外链图片请求不应阻塞阅读测试，图片用例自行等待相应图片。
+        waitFor { js("document.readyState!='loading' && !!document.querySelector('a.original') && document.querySelector('h1.title').getBoundingClientRect().height>0") == "true" }
     }
 
     private fun waitFor(timeoutMs: Long = 15_000, check: () -> Boolean) {
@@ -164,9 +166,13 @@ class ReaderTest {
     /** 冷启动后第一次打开文章：不仅 DOM 要有正文，屏幕上也必须真正画出正文，不能靠退出重进恢复。 */
     @Test
     fun firstOpenPaintsBodyWithoutReopening() {
-        openArticle("<div id=\"first-paint\" style=\"height:120px;background:rgb(36,196,142)\">第一次打开的正文</div><p>第二段正文</p>")
+        val body = "<div id=\"first-paint\" style=\"height:120px;background:rgb(36,196,142)\">第一次打开的正文</div>" +
+            (1..200).joinToString("") { "<p>第 $it 段正文，用来验证较长文章首次打开时的显示。</p>" }
+        openArticle(body, second = true)
+        rule.waitForIdle()
+        android.util.Log.i("ReaderPerf", "clickToDomMs=${android.os.SystemClock.elapsedRealtime() - openedAt}")
         scenario!!.onActivity { assertTrue(findWebView(it.window.decorView)!!.settings.offscreenPreRaster) }
-        val rect = JSONArray(js("(function(){var r=document.querySelector('#first-paint').getBoundingClientRect();return [r.left+r.width/2,r.top+10,devicePixelRatio]})()"))
+        val rect = JSONArray(js("(function(){var r=document.querySelector('#first-paint').getBoundingClientRect();return [r.left+r.width/2,r.bottom-10,devicePixelRatio]})()"))
         val ratio = rect.getDouble(2)
         var x = 0
         var y = 0
@@ -175,16 +181,28 @@ class ReaderTest {
             findWebView(it.window.decorView)!!.getLocationOnScreen(location)
             x = location[0] + (rect.getDouble(0) * ratio).toInt()
             y = location[1] + (rect.getDouble(1) * ratio).toInt()
+            android.util.Log.i("ReaderPerf", "marker=($x,$y), web=(${location[0]},${location[1]},${findWebView(it.window.decorView)!!.width},${findWebView(it.window.decorView)!!.height})")
         }
-        waitFor {
-            val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-            try {
-                val pixel = bitmap.getPixel(x.coerceIn(0, bitmap.width - 1), y.coerceIn(0, bitmap.height - 1))
-                kotlin.math.abs(Color.red(pixel) - 36) <= 3 && kotlin.math.abs(Color.green(pixel) - 196) <= 3 && kotlin.math.abs(Color.blue(pixel) - 142) <= 3
-            } finally {
-                bitmap.recycle()
+        var sampled = 0
+        try {
+            waitFor {
+                val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+                try {
+                    sampled = bitmap.getPixel(x.coerceIn(0, bitmap.width - 1), y.coerceIn(0, bitmap.height - 1))
+                    kotlin.math.abs(Color.red(sampled) - 36) <= 3 && kotlin.math.abs(Color.green(sampled) - 196) <= 3 && kotlin.math.abs(Color.blue(sampled) - 142) <= 3
+                } finally {
+                    bitmap.recycle()
+                }
             }
+        } catch (error: Throwable) {
+            val file = java.io.File(ApplicationProvider.getApplicationContext<android.content.Context>().getExternalFilesDir(null), "reader-perf-$openedAt.png")
+            val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+            android.util.Log.i("ReaderPerf", "sampleColor=${Integer.toHexString(sampled)} failureScreenshot=${file.absolutePath}")
+            throw error
         }
+        android.util.Log.i("ReaderPerf", "clickToPaintMs=${android.os.SystemClock.elapsedRealtime() - openedAt}")
     }
 
     /** 长按正文里的图片：弹出“保存到相册 / 分享图片”（2026-10-24，以前长按没反应）；长按文字不弹。 */

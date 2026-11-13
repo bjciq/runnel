@@ -28,7 +28,7 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 公开仓库的历史在 2026-10-21 压成了 1 个提交、提交数重新计数；加 200 保证比之前发过的所有包（最大 110）都大，可以覆盖安装
         versionCode = 200 + buildNumber
-        versionName = "1.2.2"
+        versionName = "1.2.3"
         // 仪器测试（app/src/androidTest）跑在模拟器上：.\gradlew.bat :app:connectedDebugAndroidTest
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

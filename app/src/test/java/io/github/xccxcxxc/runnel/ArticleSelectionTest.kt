@@ -176,6 +176,7 @@ class ArticleSelectionTest {
         rule.runOnIdle {
             assertEquals(173, session.currentIndex)
             assertEquals(127L, session.ids[session.currentIndex])
+            assertEquals("首屏绘出前不创建相邻 WebView", setOf(127L), state.webViews.keys)
         }
     }
 }

@@ -36,15 +36,34 @@ object WebViewPool {
     private const val MAX_POOLED = 3
     private val pool = ArrayDeque<WebView>()
     private val contentLoader = ArticleContentLoader()
+    private data class ReadyRequest(val html: String, val callback: () -> Unit)
+    private class ReaderWebView(context: Context) : WebView(context) {
+        var paintedHtml: String? = null
+        var readyRequest: ReadyRequest? = null
+    }
 
     /** 正文在 AndroidView 挂载并完成布局后加载；重复更新保留原来的文档和滚动位置。 */
-    fun loadArticle(view: WebView, html: String, baseUrl: String) = contentLoader.load(view, html, baseUrl)
+    fun loadArticle(view: WebView, html: String, baseUrl: String, onReady: (() -> Unit)? = null) {
+        (view as? ReaderWebView)?.let { reader ->
+            reader.readyRequest = onReady?.let { ReadyRequest(html, it) }
+            if (view.tag == html && reader.paintedHtml == html) {
+                reader.readyRequest = null
+                onReady?.invoke()
+            }
+        }
+        contentLoader.load(view, html, baseUrl)
+    }
 
     /** 首帧之后、主线程空闲时预热 [count] 个。 */
     fun prewarm(context: Context, count: Int = 2) {
         val app = context.applicationContext
         Looper.myQueue().addIdleHandler {
-            if (pool.size < count) pool.addLast(create(app))
+            if (pool.size < count) {
+                val view = create(app)
+                // 只创建控件还没有准备首个文档；用无网络请求的空白文档提前启动 Chromium 的渲染路径。
+                view.loadDataWithBaseURL("about:blank", "<!doctype html><html><body></body></html>", "text/html", "utf-8", null)
+                pool.addLast(view)
+            }
             pool.size < count // 每次空闲只建一个，建够为止
         }
     }
@@ -66,6 +85,7 @@ object WebViewPool {
 
     fun park(id: String, view: WebView) {
         contentLoader.cancel(view)
+        (view as? ReaderWebView)?.readyRequest = null
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
         view.setOnScrollChangeListener(null)
@@ -90,6 +110,7 @@ object WebViewPool {
 
     fun recycle(view: WebView) {
         contentLoader.cancel(view)
+        (view as? ReaderWebView)?.let { it.paintedHtml = null; it.readyRequest = null }
         view.onResume() // 留着时暂停过；回到池里给别的文章用
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
@@ -109,7 +130,7 @@ object WebViewPool {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun create(app: Context): WebView = WebView(MutableContextWrapper(app)).apply {
+    private fun create(app: Context): WebView = ReaderWebView(MutableContextWrapper(app)).apply {
         setBackgroundColor(Color.TRANSPARENT)
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
@@ -201,9 +222,16 @@ object WebViewPool {
             // 文档提交和 Compose 图层显示不是同一个时刻；首帧就绪后主动通知宿主重画。
             view.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
                 override fun onComplete(requestId: Long) {
-                    if (view.isAttachedToWindow && view.tag == document) {
+                    if (view.tag != document) return
+                    val reader = view as? ReaderWebView
+                    reader?.paintedHtml = document
+                    if (view.isAttachedToWindow) {
                         view.requestLayout()
                         view.postInvalidateOnAnimation()
+                        reader?.readyRequest?.takeIf { it.html == document }?.let {
+                            reader.readyRequest = null
+                            it.callback()
+                        }
                     }
                 }
             })
