@@ -35,6 +35,10 @@ import io.github.xccxcxxc.runnel.data.OpenLinks
 object WebViewPool {
     private const val MAX_POOLED = 3
     private val pool = ArrayDeque<WebView>()
+    private val contentLoader = ArticleContentLoader()
+
+    /** 正文在 AndroidView 挂载并完成布局后加载；重复更新保留原来的文档和滚动位置。 */
+    fun loadArticle(view: WebView, html: String, baseUrl: String) = contentLoader.load(view, html, baseUrl)
 
     /** 首帧之后、主线程空闲时预热 [count] 个。 */
     fun prewarm(context: Context, count: Int = 2) {
@@ -48,6 +52,7 @@ object WebViewPool {
     fun obtain(context: Context): WebView {
         val view = pool.removeFirstOrNull() ?: create(context.applicationContext)
         (view.context as MutableContextWrapper).baseContext = context
+        view.onResume()
         return view
     }
 
@@ -60,6 +65,7 @@ object WebViewPool {
     private val parked = LinkedHashMap<String, WebView>()
 
     fun park(id: String, view: WebView) {
+        contentLoader.cancel(view)
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
         view.setOnScrollChangeListener(null)
@@ -83,6 +89,7 @@ object WebViewPool {
     private const val PAUSE_MEDIA = "document.querySelectorAll('video,audio').forEach(function(m){m.pause()})"
 
     fun recycle(view: WebView) {
+        contentLoader.cancel(view)
         view.onResume() // 留着时暂停过；回到池里给别的文章用
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
@@ -120,6 +127,8 @@ object WebViewPool {
             builtInZoomControls = false
             displayZoomControls = false
             loadsImagesAutomatically = true
+            // 阅读页在屏幕外准备后随转场滑入；让 Chromium 提前准备可见区域的首帧。
+            offscreenPreRaster = true
         }
         webViewClient = ReaderClient
         webChromeClient = FullscreenChrome(this)
@@ -186,6 +195,20 @@ object WebViewPool {
     const val FULLSCREEN_TAG = "reader_fullscreen_video"
 
     private object ReaderClient : WebViewClient() {
+        override fun onPageCommitVisible(view: WebView, url: String) {
+            val document = view.tag as? String ?: return
+            if (url == "about:blank") return
+            // 文档提交和 Compose 图层显示不是同一个时刻；首帧就绪后主动通知宿主重画。
+            view.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    if (view.isAttachedToWindow && view.tag == document) {
+                        view.requestLayout()
+                        view.postInvalidateOnAnimation()
+                    }
+                }
+            })
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             if (!request.isForMainFrame) return false
             return handleLink(view.context, request.url)
