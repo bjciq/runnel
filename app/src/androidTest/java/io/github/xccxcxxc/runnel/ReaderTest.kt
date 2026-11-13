@@ -161,6 +161,32 @@ class ReaderTest {
             .perform(GeneralClickAction(tap, at, Press.FINGER, 0, 0))
     }
 
+    /** 冷启动后第一次打开文章：不仅 DOM 要有正文，屏幕上也必须真正画出正文，不能靠退出重进恢复。 */
+    @Test
+    fun firstOpenPaintsBodyWithoutReopening() {
+        openArticle("<div id=\"first-paint\" style=\"height:120px;background:rgb(36,196,142)\">第一次打开的正文</div><p>第二段正文</p>")
+        scenario!!.onActivity { assertTrue(findWebView(it.window.decorView)!!.settings.offscreenPreRaster) }
+        val rect = JSONArray(js("(function(){var r=document.querySelector('#first-paint').getBoundingClientRect();return [r.left+r.width/2,r.top+10,devicePixelRatio]})()"))
+        val ratio = rect.getDouble(2)
+        var x = 0
+        var y = 0
+        scenario!!.onActivity {
+            val location = IntArray(2)
+            findWebView(it.window.decorView)!!.getLocationOnScreen(location)
+            x = location[0] + (rect.getDouble(0) * ratio).toInt()
+            y = location[1] + (rect.getDouble(1) * ratio).toInt()
+        }
+        waitFor {
+            val bitmap = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            try {
+                val pixel = bitmap.getPixel(x.coerceIn(0, bitmap.width - 1), y.coerceIn(0, bitmap.height - 1))
+                kotlin.math.abs(Color.red(pixel) - 36) <= 3 && kotlin.math.abs(Color.green(pixel) - 196) <= 3 && kotlin.math.abs(Color.blue(pixel) - 142) <= 3
+            } finally {
+                bitmap.recycle()
+            }
+        }
+    }
+
     /** 长按正文里的图片：弹出“保存到相册 / 分享图片”（2026-10-24，以前长按没反应）；长按文字不弹。 */
     @Test
     fun longPressImageOffersSaveAndShare() {

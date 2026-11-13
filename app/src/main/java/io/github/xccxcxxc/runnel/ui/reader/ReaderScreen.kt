@@ -450,6 +450,7 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
             for (attempt in 0 until 40) {
                 delay(50)
                 val web = state.webViews[id] ?: break
+                if (web.tag != html) continue // 新正文还在等首次挂载/布局，不能把旧文档的位置当成已经恢复。
                 val y = web.scrollY
                 if (y >= target - 2) break
                 if (lastSet >= 0 && y != lastSet && y != 0) break // 用户已经自己滚动了
@@ -507,10 +508,11 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
                         restore.settled = false
                         restore.revealed = false
                     }
-                    view.tag = html
-                    view.loadDataWithBaseURL(article?.url ?: "https://runnel.invalid/", html, "text/html", "utf-8", null)
                 }
-                if (html != null) restore.parked = false
+                if (html != null) {
+                    WebViewPool.loadArticle(view, html, article?.url ?: "https://runnel.invalid/")
+                    restore.parked = false
+                }
             },
         )
         if (!restore.revealed) Box(Modifier.fillMaxSize().background(colors.background))
