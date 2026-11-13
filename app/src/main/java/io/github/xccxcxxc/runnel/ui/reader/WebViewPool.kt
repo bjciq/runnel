@@ -40,6 +40,15 @@ object WebViewPool {
     private class ReaderWebView(context: Context) : WebView(context) {
         var paintedHtml: String? = null
         var readyRequest: ReadyRequest? = null
+        var articleBackground: Int? = null
+    }
+
+    /** Compose 的状态更新不应反复重设 Chromium 的背景，只有主题颜色改变时才更新。 */
+    fun setArticleBackground(view: WebView, color: Int) {
+        val reader = view as? ReaderWebView
+        if (reader != null && reader.articleBackground == color) return
+        view.setBackgroundColor(color)
+        reader?.articleBackground = color
     }
 
     /** 正文在 AndroidView 挂载并完成布局后加载；重复更新保留原来的文档和滚动位置。 */
@@ -219,14 +228,13 @@ object WebViewPool {
         override fun onPageCommitVisible(view: WebView, url: String) {
             val document = view.tag as? String ?: return
             if (url == "about:blank") return
-            // 文档提交和 Compose 图层显示不是同一个时刻；首帧就绪后主动通知宿主重画。
+            // 只请求绘制；正文已就绪时再强制重新布局，会扰动 AndroidView 的合成图层。
             view.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
                 override fun onComplete(requestId: Long) {
                     if (view.tag != document) return
                     val reader = view as? ReaderWebView
                     reader?.paintedHtml = document
                     if (view.isAttachedToWindow) {
-                        view.requestLayout()
                         view.postInvalidateOnAnimation()
                         reader?.readyRequest?.takeIf { it.html == document }?.let {
                             reader.readyRequest = null

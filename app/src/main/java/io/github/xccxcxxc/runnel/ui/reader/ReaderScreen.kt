@@ -492,7 +492,7 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
         AndroidView(
             factory = { ctx ->
                 (parked ?: WebViewPool.obtain(ctx)).also {
-                    it.setBackgroundColor(bg)
+                    WebViewPool.setArticleBackground(it, bg)
                     state.webViews[id] = it
                     it.setOnScrollChangeListener { _, _, y, _, oldY -> state.onWebScroll(id, y, oldY) }
                     // 长按图片：弹出保存/分享；长按文字等其它地方照旧（返回 false，系统选字）
@@ -518,7 +518,7 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
                 if (current && restore.settled && it.tag != null) WebViewPool.park(memKey, it) else WebViewPool.recycle(it)
             },
             update = { view ->
-                view.setBackgroundColor(bg)
+                WebViewPool.setArticleBackground(view, bg)
                 if (html != null && view.tag != html) {
                     // 留着的那份正文已经过时（期间改了字号、样式等）：只能重新载入，再按它原来的位置恢复
                     if (restore.parked && view.tag != null && view.scrollY > 0) {
