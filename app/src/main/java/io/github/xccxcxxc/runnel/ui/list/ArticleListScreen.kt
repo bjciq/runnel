@@ -219,8 +219,11 @@ class ArticleListState(
         if (query.isNotEmpty()) updateQuery("")
     }
 
-    fun open(index: Int): ReaderSession {
-        val s = ReaderSession(built?.items.orEmpty().map { it.id }, index, source, filter)
+    /** 点击只传文章身份；下标和阅读顺序必须来自同一份快照，不能混用重组前后的列表。 */
+    fun open(articleId: Long): ReaderSession? {
+        val snapshot = built ?: return null
+        val index = snapshot.itemIndex[articleId] ?: return null
+        val s = ReaderSession(snapshot.items.map { it.id }, index, source, filter)
         session = s
         return s
     }
@@ -529,7 +532,7 @@ fun ArticleListScreen(
                         thumbSize = thumbSize,
                     ) {
                         menuFor = null
-                        if (index >= 0) onOpenArticle(state.open(index))
+                        state.open(item.id)?.let(onOpenArticle)
                     }
                 }
             }
@@ -599,7 +602,7 @@ fun ArticleListScreen(
                                 onLongClick = { openMenu(item, row.key) },
                             ) {
                                 focusManager.clearFocus()
-                                onOpenArticle(state.open(built.itemIndex[item.id] ?: 0))
+                                state.open(item.id)?.let(onOpenArticle)
                             }
                         }
                     }
