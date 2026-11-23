@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 及以下的自动备份：账号（服务器地址、用户名、加密的 token）不备份。
+     token 的密钥在 Keystore 里、恢复到别的设备也解不开；不备份账号，恢复后直接回到登录页。 -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="account.xml" />
+</full-backup-content>

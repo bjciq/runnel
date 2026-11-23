@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动图标“涟漪”前景：一滴水荡开两圈涟漪，形状即 RSS 符号；都在中间 66dp 安全区内，和主题图标同一组路径 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M41,57.5 C38.4,60.8 35.4,64.3 35.4,67.6 A5.6,5.6 0 0 0 46.6,67.6 C46.6,64.3 43.6,60.8 41,57.5 Z" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M41,49.5 A17.5,17.5 0 0 1 58.5,67" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeAlpha="0.7" android:strokeWidth="7" android:strokeLineCap="round"
+        android:pathData="M41,37.5 A29.5,29.5 0 0 1 70.5,67" />
+</vector>

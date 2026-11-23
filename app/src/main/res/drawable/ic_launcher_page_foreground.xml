@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 备选启动图标“页中溪”前景：白色文章卡片（两行标题），下半截有两层溪水流过；卡片角在 66dp 安全区内 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M42,28 H66 A9,9 0 0 1 75,37 V71 A9,9 0 0 1 66,80 H42 A9,9 0 0 1 33,71 V37 A9,9 0 0 1 42,28 Z" />
+    <path android:fillColor="#FF6DB1A8"
+        android:pathData="M43.3,38 H64.7 A2.3,2.3 0 0 1 64.7,42.6 H43.3 A2.3,2.3 0 0 1 43.3,38 Z" />
+    <path android:fillColor="#FF6DB1A8" android:fillAlpha="0.4"
+        android:pathData="M43.3,47 H55.7 A2.3,2.3 0 0 1 55.7,51.6 H43.3 A2.3,2.3 0 0 1 43.3,47 Z" />
+    <group>
+        <clip-path android:pathData="M42,28 H66 A9,9 0 0 1 75,37 V71 A9,9 0 0 1 66,80 H42 A9,9 0 0 1 33,71 V37 A9,9 0 0 1 42,28 Z" />
+        <path android:fillColor="#FFB0E7DE" android:fillAlpha="0.55"
+            android:pathData="M28,60 q5.25,-5 10.5,0 t10.5,0 t10.5,0 t10.5,0 t10.5,0 V82 H28 Z" />
+        <path android:pathData="M22,65 q5.25,-5 10.5,0 t10.5,0 t10.5,0 t10.5,0 t10.5,0 t10.5,0 V82 H22 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient android:type="linear"
+                    android:startX="54" android:startY="62.5" android:endX="54" android:endY="82">
+                    <item android:offset="0" android:color="#FF8FDCD0" />
+                    <item android:offset="1" android:color="#FF6AADA6" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

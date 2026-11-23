@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 分享图片：先写到缓存目录，再经 FileProvider 交给其它应用（ImageActions） -->
+<paths>
+    <cache-path name="shared_images" path="shared-images/" />
+</paths>

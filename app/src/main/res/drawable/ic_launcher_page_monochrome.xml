@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 备选主题图标（Android 13+ 单色）：卡片轮廓 + 两行标题 + 一道水波 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FF000000" android:strokeWidth="5"
+        android:pathData="M43,30.5 H65 A7.5,7.5 0 0 1 72.5,38 V70 A7.5,7.5 0 0 1 65,77.5 H43 A7.5,7.5 0 0 1 35.5,70 V38 A7.5,7.5 0 0 1 43,30.5 Z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M44.3,39 H61.7 A2.3,2.3 0 0 1 61.7,43.6 H44.3 A2.3,2.3 0 0 1 44.3,39 Z M44.3,48 H53.7 A2.3,2.3 0 0 1 53.7,52.6 H44.3 A2.3,2.3 0 0 1 44.3,48 Z" />
+    <path android:strokeColor="#FF000000" android:strokeWidth="4.6" android:strokeLineCap="round"
+        android:pathData="M42.5,65 q3.5,-4.5 7,0 t7,0 t7,0" />
+</vector>

@@ -1,0 +1,168 @@
+name: CI & Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Official release version (e.g. 1.2). Leave empty for dev build."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version & Mode
+        id: meta
+        run: |
+          IS_OFFICIAL="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            IS_OFFICIAL="true"
+            VER="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9] ]]; then
+            IS_OFFICIAL="true"
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            LAST_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo "v1.2.4")
+            COMMITS=$(git rev-list --count "${LAST_TAG}..HEAD" 2>/dev/null || echo "${{ github.run_number }}")
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VER="${LAST_TAG#v}-dev.${COMMITS}+${SHORT_SHA}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "is_official=${IS_OFFICIAL}" >> "$GITHUB_OUTPUT"
+          echo "last_tag=${LAST_TAG:-}" >> "$GITHUB_OUTPUT"
+          echo "Build Version: ${VER} (Official: ${IS_OFFICIAL})"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Restore Signing Key
+        env:
+          KEYSTORE_B64: ${{ secrets.RUNNEL_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/runnel.jks"
+            echo "RUNNEL_KEYSTORE=$RUNNER_TEMP/runnel.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run Unit Tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Build Optimized Release APK
+        id: build
+        env:
+          RUNNEL_KEYSTORE_PASSWORD: ${{ secrets.RUNNEL_KEYSTORE_PASSWORD }}
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          
+          mkdir -p dist
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          if [ "${{ steps.meta.outputs.is_official }}" = "true" ]; then
+            OUT_NAME="Runnel-${{ steps.meta.outputs.version }}.apk"
+          else
+            OUT_NAME="Runnel-dev-${{ steps.meta.outputs.version }}.apk"
+          fi
+          cp "$APK_SRC" "dist/${OUT_NAME}"
+          echo "final_apk=dist/${OUT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "final_name=${OUT_NAME}" >> "$GITHUB_OUTPUT"
+          ls -lh dist/
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.final_name || 'runnel-apk' }}
+          path: dist/*.apk
+          retention-days: 7
+
+      - name: Publish Official GitHub Release
+        if: steps.meta.outputs.is_official == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f RELEASE_NOTES.md ]; then
+            gh release create "v${{ steps.meta.outputs.version }}" dist/*.apk \
+              --title "Runnel v${{ steps.meta.outputs.version }}" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "v${{ steps.meta.outputs.version }}" dist/*.apk \
+              --title "Runnel v${{ steps.meta.outputs.version }}" \
+              --generate-notes
+          fi
+
+      - name: Update Development Pre-Release
+        if: steps.meta.outputs.is_official == 'false' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LAST_TAG: ${{ steps.meta.outputs.last_tag }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          {
+            echo "基于提交 \`${SHORT_SHA}\` 自动构建（相对 \`${LAST_TAG}\` 的改动）："
+            echo ""
+            if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "$LAST_TAG" >/dev/null; then
+              git log --no-merges "${LAST_TAG}..HEAD" --pretty=format:'### %s (`%h`)%n%n%b%n'
+            else
+              git log -1 --pretty=format:'### %s (`%h`)%n%n%b%n'
+            fi
+          } > dist/dev-notes.md
+          gh release delete "dev-latest" -y --cleanup-tag 2>/dev/null || true
+          gh release create "dev-latest" dist/*.apk \
+            --prerelease \
+            --title "Runnel 开发尝鲜版 (${{ steps.meta.outputs.version }})" \
+            --notes-file dist/dev-notes.md
+
+      - name: Send APK to Telegram
+        if: github.ref == 'refs/heads/main'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINAL_APK: ${{ steps.build.outputs.final_apk }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          IS_OFFICIAL: ${{ steps.meta.outputs.is_official }}
+          LAST_TAG: ${{ steps.meta.outputs.last_tag }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not configured, skipping notification."
+            exit 0
+          fi
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "$LAST_TAG" >/dev/null; then
+            CHANGES=$(git log --no-merges -n 6 "${LAST_TAG}..HEAD" --pretty=format:'- %s')
+          else
+            CHANGES=$(git log -1 --pretty=format:'- %s')
+          fi
+          if [ "$IS_OFFICIAL" = "true" ]; then
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+          else
+            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev-latest"
+          fi
+          CAPTION=$(printf 'Runnel %s (%s)\n\n%s\n\n下载: %s' "$VERSION" "$SHORT_SHA" "$CHANGES" "$RELEASE_URL")
+          CAPTION="${CAPTION:0:1000}"
+          curl -fSs -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form-string "chat_id=${TELEGRAM_CHAT_ID}" \
+            -F "document=@${FINAL_APK}" \
+            --form-string "caption=${CAPTION}" \
+            -o /tmp/tg_resp.json
+          grep -q '"ok":true' /tmp/tg_resp.json || { echo "Telegram sendDocument failed"; exit 1; }
+          echo "APK sent to Telegram successfully."

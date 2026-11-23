@@ -1,0 +1,12 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+/benchmark-results/

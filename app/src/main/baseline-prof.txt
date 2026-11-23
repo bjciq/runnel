@@ -1,0 +1,6 @@
+# 手写的 Baseline Profile（真机生成前的兜底）：本 App 自己的全部代码提前编译，
+# 避免刚装好时前几次滑动、转场边解释边 JIT 导致的偶发顿卡。
+# Compose / Coil / Room 等库自带的 profile 会被 AGP 自动合并进来。
+# 连上手机后可用 scripts/perf.sh profile 生成更精确的版本替换本文件。
+HSPLio/github/xccxcxxc/runnel/**->**(**)**
+Lio/github/xccxcxxc/runnel/**;
