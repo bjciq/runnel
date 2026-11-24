@@ -5,7 +5,9 @@ import android.webkit.WebView
 import java.util.WeakHashMap
 
 /** AndroidView 首次更新时还可能没有挂载、尺寸为 0；等容器就绪后再把最新正文交给 Chromium。 */
-internal class ArticleContentLoader {
+internal class ArticleContentLoader(
+    private val onBeforeLoad: (WebView) -> Unit = {},
+) {
     private data class Document(val html: String, val baseUrl: String)
     private val pending = WeakHashMap<WebView, Document>()
     private val attach = object : View.OnAttachStateChangeListener {
@@ -41,6 +43,7 @@ internal class ArticleContentLoader {
             if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return@post
             val document = pending[view] ?: return@post
             cancel(view)
+            onBeforeLoad(view)
             view.loadDataWithBaseURL(document.baseUrl, document.html, "text/html", "utf-8", null)
             view.tag = document.html
         }

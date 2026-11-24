@@ -218,12 +218,15 @@ class ArticleSelectionTest {
             }
         }
         val state = entry.retain<ReaderState>("reader") { error("阅读状态尚未创建") }
-        rule.waitUntil(15_000) { state.currentId == 127L }
+        rule.waitUntil(15_000) { state.currentId == 127L && 127L in state.cachedArticleIds() }
         rule.waitForIdle()
         rule.runOnIdle {
             assertEquals(173, session.currentIndex)
             assertEquals(127L, session.ids[session.currentIndex])
-            assertEquals("首屏绘出前不创建相邻 WebView", setOf(127L), state.webViews.keys)
+            assertEquals("首屏绘出前相邻页容器已就位，避免后续动态挂载触发重排闪烁", setOf(126L, 127L, 128L), state.webViews.keys)
+            assertEquals("首屏绘出前只加载当前文章数据，不抢占查询", setOf(127L), state.cachedArticleIds())
+            assertNull("首屏绘出前不加载上一篇正文", state.webViews[128L]?.tag)
+            assertNull("首屏绘出前不加载下一篇正文", state.webViews[126L]?.tag)
         }
     }
 }

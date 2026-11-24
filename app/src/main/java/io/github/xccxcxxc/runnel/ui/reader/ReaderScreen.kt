@@ -43,6 +43,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -101,6 +103,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -133,10 +136,12 @@ private class ScrollRestore(var target: Int) {
 }
 
 /** 阅读页状态：已加载文章的缓存、全文模式、提示消息、拉动切篇的位移。 */
+@Stable
 class ReaderState(private val graph: AppGraph, private val account: AccountSession, private val scope: CoroutineScope) {
     val accountId: String get() = account.id
 
     private val cache = ReaderArticleCache(scope) { account.repo.reader(it) }
+    internal fun cachedArticleIds(): Set<Long> = cache.cachedIds()
     /** 首篇正文首帧就绪后再预取邻页，避免冷启动时三个 WebView 和多次查询抢占当前文章。 */
     var canPrefetch by mutableStateOf(false)
         private set
@@ -178,8 +183,16 @@ class ReaderState(private val graph: AppGraph, private val account: AccountSessi
     suspend fun load(id: Long): ReaderArticle? {
         val a = cache.load(id) ?: return null
         a.fullHtml?.let { if (id !in fullText) fullText[id] = it }
+        // 订阅源开启自动全文且本地已有缓存全文时，在首次组装 HTML 前就切到全文，避免先闪出摘要再重载。
+        if (a.fullHtml != null && id !in autoTried && shouldAutoFullText(a)) {
+            autoTried += id
+            if (showFull[id] != true) showFull[id] = true
+        }
         return a
     }
+
+    private fun shouldAutoFullText(article: ReaderArticle): Boolean =
+        account.prefs.settings.value.autoReaderView(article.feedId) || PageVideo.shouldFetch(article.url, article.html)
 
     /**
      * 订阅源设为默认用 Reader View 打开时，停在这篇文章就自动抓取并显示全文（每篇只自动一次，手动切回后不再强开）。
@@ -190,7 +203,7 @@ class ReaderState(private val graph: AppGraph, private val account: AccountSessi
     suspend fun autoFullText(id: Long) {
         if (id in autoTried) return
         val article = load(id) ?: return
-        if (!account.prefs.settings.value.autoReaderView(article.feedId) && !PageVideo.shouldFetch(article.url, article.html)) return
+        if (!shouldAutoFullText(article)) return
         autoTried += id
         if (showFull[id] != true && article.url != null) toggleFullText(article)
     }
@@ -324,12 +337,23 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
         val current = pagerState.currentPage.coerceIn(0, session.ids.lastIndex)
         val currentId = session.ids[current]
         val article by produceState<ReaderArticle?>(null, currentId) { value = state.load(currentId) }
-        val prefetch = state.canPrefetch
-        val prevTitle by produceState<String?>(null, current, prefetch) {
-            value = if (prefetch) session.ids.getOrNull(current - 1)?.let { state.load(it)?.title } else null
+        val prevTitle by produceState<String?>(null, current) {
+            val prevId = session.ids.getOrNull(current - 1)
+            if (prevId == null) {
+                value = null
+                return@produceState
+            }
+            snapshotFlow { state.canPrefetch }.first { it }
+            value = state.load(prevId)?.title
         }
-        val nextTitle by produceState<String?>(null, current, prefetch) {
-            value = if (prefetch) session.ids.getOrNull(current + 1)?.let { state.load(it)?.title } else null
+        val nextTitle by produceState<String?>(null, current) {
+            val nextId = session.ids.getOrNull(current + 1)
+            if (nextId == null) {
+                value = null
+                return@produceState
+            }
+            snapshotFlow { state.canPrefetch }.first { it }
+            value = state.load(nextId)?.title
         }
 
         PullHint(
@@ -424,21 +448,22 @@ private fun PullHint(icon: ImageVector, label: String, title: String?, progress:
 @Composable
 private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settings: Settings, topPad: Int, bottomPad: Int) {
     val colors = Runnel.colors
-    // 当前页立即加载；首篇正文准备好之后才开始邻页的查库、组合和 WebView 创建。
-    var prepared by remember { mutableStateOf(isCurrent) }
-    val prefetch = state.canPrefetch
-    LaunchedEffect(isCurrent, prefetch) {
-        if (isCurrent) prepared = true
-        else if (prefetch && !prepared) {
+    val entry = LocalNavEntry.current
+    // 当前页立即加载正文；邻页的查库、HTML 组装和 Chromium 渲染等首篇首帧就绪后再开始，
+    // 但 WebView 容器在进入阅读页时即挂载就位，避免正文显示后再动态 addView 触发全树重排导致闪一下。
+    var canLoad by remember { mutableStateOf(isCurrent) }
+    LaunchedEffect(isCurrent) {
+        if (isCurrent) {
+            canLoad = true
+        } else if (!canLoad) {
+            snapshotFlow { state.canPrefetch }.first { it }
             delay(400)
-            prepared = true
+            canLoad = true
         }
     }
-    if (!isCurrent && !prepared) {
-        Box(Modifier.fillMaxSize().background(colors.background))
-        return
+    val article by produceState<ReaderArticle?>(null, id, canLoad) {
+        if (canLoad) value = state.load(id)
     }
-    val article by produceState<ReaderArticle?>(null, id) { value = state.load(id) }
     val full = state.showFull[id] == true
     val body = (if (full) state.fullText[id] else null) ?: article?.html.orEmpty()
     // 上下留白不算进 key：全屏看视频时系统栏隐藏、屏幕转横，留白跟着变，重新载入会把播放器踢出全屏（转屏也会丢掉正文状态），
@@ -454,9 +479,20 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
     val context = LocalContext.current
     // 上次退出时留在内存里的 WebView（WebViewPool.park）：正文已排好、停在原位置，直接复用，不用恢复
     val memKey = "${state.accountId}:$id"
-    val parked = remember(id) { WebViewPool.takeParked(memKey, context) }
+    val parked = remember(id) { if (isCurrent) WebViewPool.takeParked(memKey, context) else null }
     val restore = remember(id) { ScrollRestore(if (parked != null) 0 else ReaderScrollMemory[memKey]).also { it.parked = parked != null } }
+    // 从池里拿的新/回收 WebView 在本篇首帧提交画好前用背景色盖住，避免闪出旧文章残留、白底 about:blank 或中途跳变。
+    var documentPainted by remember(id) { mutableStateOf(parked != null && parked.tag != null) }
     val current by rememberUpdatedState(isCurrent)
+    if (isCurrent && parked != null) {
+        SideEffect { entry.markContentReady() }
+    }
+    // 兜底：极端情况下若 Chromium 未回调首帧状态，最多盖 0.8 秒后露出正文，避免长期白屏。
+    LaunchedEffect(id, html) {
+        if (html == null || documentPainted) return@LaunchedEffect
+        delay(800)
+        documentPainted = true
+    }
     // 没有留着的 WebView 时，第一次载入正文后滚回上次退出时的位置：图片还没撑开高度时 scrollTo 会被截短，所以隔一会儿重试，
     // 到位或用户自己动了手就停。恢复期间正文被背景色盖住，到位后一次性露出（最多盖 0.8 秒，之后仍在后台继续重试）
     LaunchedEffect(html) {
@@ -521,21 +557,42 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
                 WebViewPool.setArticleBackground(view, bg)
                 if (html != null && view.tag != html) {
                     // 留着的那份正文已经过时（期间改了字号、样式等）：只能重新载入，再按它原来的位置恢复
-                    if (restore.parked && view.tag != null && view.scrollY > 0) {
-                        restore.target = view.scrollY
-                        restore.settled = false
-                        restore.revealed = false
+                    if (restore.parked && view.tag != null) {
+                        documentPainted = false
+                        if (view.scrollY > 0) {
+                            restore.target = view.scrollY
+                            restore.settled = false
+                            restore.revealed = false
+                        }
                     }
                 }
                 if (html != null) {
-                    WebViewPool.loadArticle(view, html, article?.url ?: "https://runnel.invalid/") {
-                        if (current) state.onCurrentPagePainted()
-                    }
+                    WebViewPool.loadArticle(
+                        view = view,
+                        html = html,
+                        baseUrl = article?.url?.takeIf { it.isNotBlank() } ?: "https://runnel.invalid/",
+                        onCommitted = {
+                            if (current) entry.markContentReady()
+                        },
+                        onPainted = {
+                            documentPainted = true
+                            if (current) {
+                                entry.markContentReady()
+                                state.onCurrentPagePainted()
+                            }
+                        },
+                    )
                     restore.parked = false
                 }
             },
         )
-        if (!restore.revealed) Box(Modifier.fillMaxSize().background(colors.background))
+        // 遮罩常驻在组合树里，只通过 graphicsLayer 的 alpha 显隐，露出正文时不触发 AndroidView 重组或重排。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = if (!documentPainted || !restore.revealed) 1f else 0f }
+                .background(colors.background),
+        )
     }
 
     pressedImage?.let { src ->

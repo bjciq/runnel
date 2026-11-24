@@ -17,6 +17,8 @@ internal class ReaderArticleCache(
 
     init { require(capacity > 0) }
 
+    fun cachedIds(): Set<Long> = cached.keys.toSet()
+
     suspend fun load(id: Long): ReaderArticle? {
         cached[id]?.let { return it }
         val request = pending.getOrPut(id) {

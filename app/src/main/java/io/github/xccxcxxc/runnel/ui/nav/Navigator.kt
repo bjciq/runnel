@@ -37,8 +37,8 @@ sealed interface Route {
     /** 是否允许在页面任意位置右滑返回（列表页的行要用横滑，所以不允许）。 */
     val fullScreenBack: Boolean get() = this is Reader || this is Search
 
-    /** 推入时等首屏数据（[NavEntry.markContentReady]）再开始滑入：文章列表的数据要查库，一屏十几行一起排版是最重的一帧。 */
-    val waitsForContent: Boolean get() = this is Articles
+    /** 推入时等首屏内容就绪（[NavEntry.markContentReady]）再开始滑入：文章列表等查库排版，阅读页等首篇正文提交可见，避免空页滑入后闪出正文。 */
+    val waitsForContent: Boolean get() = this is Articles || this is Reader
 
     /** 添加账号：选服务（没有账号时是根页面）。 */
     data object AddAccount : Route

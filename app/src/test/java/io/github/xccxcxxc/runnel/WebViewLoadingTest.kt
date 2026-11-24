@@ -6,6 +6,8 @@ import android.os.Looper
 import android.view.View
 import android.webkit.WebView
 import android.widget.FrameLayout
+import io.github.xccxcxxc.runnel.ui.nav.ReaderSession
+import io.github.xccxcxxc.runnel.ui.nav.Route
 import io.github.xccxcxxc.runnel.ui.reader.ArticleContentLoader
 import io.github.xccxcxxc.runnel.ui.reader.WebViewPool
 import org.junit.After
@@ -130,5 +132,42 @@ class WebViewLoadingTest {
         web.destroy()
         web = WebViewPool.obtain(controller.get())
         assertTrue(shadowOf(web).wasOnResumeCalled())
+    }
+
+    @Test
+    fun readerRouteWaitsForInitialContentBeforeSlidingIn() {
+        val route = Route.Reader("a", ReaderSession(listOf(1L), 0))
+        assertTrue(route.waitsForContent)
+    }
+
+    @Test
+    fun beforeLoadCallbackRunsOnlyForActualNewLoads() {
+        var beforeCalls = 0
+        val tracked = ArticleContentLoader { beforeCalls++ }
+        attach()
+        tracked.load(web, "正文1", baseUrl)
+        drain()
+        assertEquals(1, beforeCalls)
+        tracked.load(web, "正文1", baseUrl)
+        drain()
+        assertEquals(1, beforeCalls)
+        tracked.load(web, "正文2", baseUrl)
+        tracked.cancel(web)
+        drain()
+        assertEquals(1, beforeCalls)
+    }
+
+    @Test
+    fun recycleUsesTransparentBlankDocumentOnlyWhenLoaded() {
+        web.destroy()
+        web = WebViewPool.obtain(controller.get())
+        web.tag = "<p>旧正文</p>"
+        WebViewPool.recycle(web)
+        val blank = shadowOf(web).lastLoadDataWithBaseURL
+        assertNotNull(blank)
+        assertEquals("about:blank", blank.baseUrl)
+        assertTrue("回收空白文档应带透明背景，避免暗色/暖色主题闪白", blank.data.contains("background:transparent"))
+        // 把刚回收的拿出来，避免影响后续测试并正常清理
+        web = WebViewPool.obtain(controller.get())
     }
 }

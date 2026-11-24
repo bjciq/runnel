@@ -77,7 +77,7 @@ object ReaderHtml {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <style>
 :root{--bg:${css(colors.background)};--fg:$fg;--bold:$bold;--sec:$sec;--ter:${css(colors.tertiaryLabel)};--rule:$rule;--accent:${css(colors.accent)};--code:${css(colors.highlight)};--pad-top:${topPaddingDp}px;--pad-bottom:${bottomPaddingDp}px;color-scheme:${if (colors.isDark) "dark" else "light"}}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;background:var(--bg)}
 body{margin:0;padding:var(--pad-top) 20px var(--pad-bottom);background:var(--bg);color:var(--fg);font-family:$font;font-size:${fontSize}px;line-height:${"%.2f".format(Locale.US, settings.readerLineSpacing)};overflow-wrap:anywhere;-webkit-tap-highlight-color:transparent}
 header{margin:6px 0 46px;text-align:$align}
 .date{color:var(--ter);font-size:15px;letter-spacing:.02em;font-family:system-ui,sans-serif;margin-bottom:6px}

@@ -34,11 +34,23 @@ import io.github.xccxcxxc.runnel.data.OpenLinks
  */
 object WebViewPool {
     private const val MAX_POOLED = 3
+    private const val BLANK_HTML =
+        "<!doctype html><html><head><style>html,body{margin:0;background:transparent}</style></head><body></body></html>"
     private val pool = ArrayDeque<WebView>()
-    private val contentLoader = ArticleContentLoader()
-    private data class ReadyRequest(val html: String, val callback: () -> Unit)
+    private val contentLoader = ArticleContentLoader { view ->
+        (view as? ReaderWebView)?.let {
+            it.paintedHtml = null
+            it.committedHtml = null
+        }
+    }
+    private data class ReadyRequest(
+        val html: String,
+        val onCommitted: (() -> Unit)?,
+        val onPainted: (() -> Unit)?,
+    )
     private class ReaderWebView(context: Context) : WebView(context) {
         var paintedHtml: String? = null
+        var committedHtml: String? = null
         var readyRequest: ReadyRequest? = null
         var articleBackground: Int? = null
     }
@@ -52,25 +64,40 @@ object WebViewPool {
     }
 
     /** 正文在 AndroidView 挂载并完成布局后加载；重复更新保留原来的文档和滚动位置。 */
-    fun loadArticle(view: WebView, html: String, baseUrl: String, onReady: (() -> Unit)? = null) {
+    fun loadArticle(
+        view: WebView,
+        html: String,
+        baseUrl: String,
+        onCommitted: (() -> Unit)? = null,
+        onPainted: (() -> Unit)? = null,
+    ) {
         (view as? ReaderWebView)?.let { reader ->
-            reader.readyRequest = onReady?.let { ReadyRequest(html, it) }
             if (view.tag == html && reader.paintedHtml == html) {
                 reader.readyRequest = null
-                onReady?.invoke()
+                onCommitted?.invoke()
+                onPainted?.invoke()
+            } else {
+                reader.readyRequest = if (onCommitted != null || onPainted != null) {
+                    ReadyRequest(html, onCommitted, onPainted)
+                } else {
+                    null
+                }
+                if (view.tag == html && reader.committedHtml == html) {
+                    onCommitted?.invoke()
+                }
             }
         }
         contentLoader.load(view, html, baseUrl)
     }
 
-    /** 首帧之后、主线程空闲时预热 [count] 个。 */
-    fun prewarm(context: Context, count: Int = 2) {
+    /** 首帧之后、主线程空闲时预热 [count] 个（默认与翻页器 3 页一致，避免进阅读页后现建 WebView）。 */
+    fun prewarm(context: Context, count: Int = MAX_POOLED) {
         val app = context.applicationContext
         Looper.myQueue().addIdleHandler {
             if (pool.size < count) {
                 val view = create(app)
-                // 只创建控件还没有准备首个文档；用无网络请求的空白文档提前启动 Chromium 的渲染路径。
-                view.loadDataWithBaseURL("about:blank", "<!doctype html><html><body></body></html>", "text/html", "utf-8", null)
+                // 只创建控件还没有准备首个文档；用透明背景的空白文档提前启动 Chromium 的渲染路径，避免暗色/暖色主题闪白。
+                view.loadDataWithBaseURL("about:blank", BLANK_HTML, "text/html", "utf-8", null)
                 pool.addLast(view)
             }
             pool.size < count // 每次空闲只建一个，建够为止
@@ -119,19 +146,26 @@ object WebViewPool {
 
     fun recycle(view: WebView) {
         contentLoader.cancel(view)
-        (view as? ReaderWebView)?.let { it.paintedHtml = null; it.readyRequest = null }
+        (view as? ReaderWebView)?.let {
+            it.paintedHtml = null
+            it.committedHtml = null
+            it.readyRequest = null
+        }
         view.onResume() // 留着时暂停过；回到池里给别的文章用
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
         view.stopLoading()
         view.setOnScrollChangeListener(null)
         view.setOnLongClickListener(null)
+        val hadDocument = view.tag != null
         view.tag = null
         view.scrollTo(0, 0)
         (view.context as MutableContextWrapper).baseContext = view.context.applicationContext
         if (pool.size < MAX_POOLED) {
-            view.loadUrl("about:blank")
-            view.clearHistory()
+            if (hadDocument) {
+                view.loadDataWithBaseURL("about:blank", BLANK_HTML, "text/html", "utf-8", null)
+                view.clearHistory()
+            }
             pool.addLast(view)
         } else {
             view.destroy()
@@ -228,17 +262,20 @@ object WebViewPool {
         override fun onPageCommitVisible(view: WebView, url: String) {
             val document = view.tag as? String ?: return
             if (url == "about:blank") return
-            // 只请求绘制；正文已就绪时再强制重新布局，会扰动 AndroidView 的合成图层。
+            val reader = view as? ReaderWebView
+            reader?.committedHtml = document
+            reader?.readyRequest?.takeIf { it.html == document }?.onCommitted?.invoke()
+            // 提交后先调度绘制，保证屏幕外预渲染时能尽快触发 visual state 回调；不再强行 requestLayout 扰动图层。
+            if (view.isAttachedToWindow) view.postInvalidateOnAnimation()
             view.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
                 override fun onComplete(requestId: Long) {
                     if (view.tag != document) return
-                    val reader = view as? ReaderWebView
                     reader?.paintedHtml = document
                     if (view.isAttachedToWindow) {
                         view.postInvalidateOnAnimation()
                         reader?.readyRequest?.takeIf { it.html == document }?.let {
                             reader.readyRequest = null
-                            it.callback()
+                            it.onPainted?.invoke()
                         }
                     }
                 }
