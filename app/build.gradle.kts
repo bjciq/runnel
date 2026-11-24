@@ -28,7 +28,7 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // 历史压缩重新计数；加 300 保证比之前发过的所有包（最大 235）都大，可以覆盖安装
         versionCode = 300 + buildNumber
-        versionName = "1.2.4"
+        versionName = "1.2.5"
         // 仪器测试（app/src/androidTest）跑在模拟器上：.\gradlew.bat :app:connectedDebugAndroidTest
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
