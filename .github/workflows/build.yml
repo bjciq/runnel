@@ -133,7 +133,7 @@ jobs:
             --notes-file dist/dev-notes.md
 
       - name: Send APK to Telegram
-        if: github.ref == 'refs/heads/main'
+        if: steps.meta.outputs.is_official == 'true' || github.ref == 'refs/heads/main'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
