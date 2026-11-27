@@ -88,13 +88,6 @@ jobs:
           echo "final_name=${OUT_NAME}" >> "$GITHUB_OUTPUT"
           ls -lh dist/
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.build.outputs.final_name || 'runnel-apk' }}
-          path: dist/*.apk
-          retention-days: 7
-
       - name: Publish Official GitHub Release
         if: steps.meta.outputs.is_official == 'true'
         env:
