@@ -13,6 +13,9 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 /** 点链接怎么打开：系统默认浏览器 / 应用内的浏览器标签页（Custom Tabs）。 */
 enum class OpenLinks { DEFAULT_BROWSER, IN_APP }
 
+/** 文章列表的排序方式。 */
+enum class ArticleSort { NEWEST_FIRST, OLDEST_FIRST }
+
 /** 文章列表的分组方式。 */
 enum class GroupBy { DATE, FEED, NONE }
 
@@ -74,6 +77,8 @@ data class Settings(
     // 通用
     val openLinks: OpenLinks = OpenLinks.DEFAULT_BROWSER,
     val oldestFirstUnread: Boolean = true,
+    /** “全部”和“星标”筛选下的默认文章排序（默认最新优先）。 */
+    val oldestFirstAll: Boolean = false,
     val groupBy: GroupBy = GroupBy.DATE,
     val autoNextFeed: Boolean = false,
     /** 列表页“全部标为已读”：先弹窗确认。 */
@@ -268,6 +273,7 @@ class Prefs(private val context: Context) {
             putBoolean("titleCenter", s.titleCenter)
             putString("openLinks", s.openLinks.name)
             putBoolean("oldestFirstUnread", s.oldestFirstUnread)
+            putBoolean("oldestFirstAll", s.oldestFirstAll)
             putString("groupBy", s.groupBy.name)
             putBoolean("autoNextFeed", s.autoNextFeed)
             putBoolean("markAllAsk", s.markAllAsk)
@@ -334,6 +340,7 @@ class Prefs(private val context: Context) {
             titleCenter = sp.getBoolean("titleCenter", d.titleCenter),
             openLinks = enumOf("openLinks", d.openLinks),
             oldestFirstUnread = sp.getBoolean("oldestFirstUnread", d.oldestFirstUnread),
+            oldestFirstAll = sp.getBoolean("oldestFirstAll", d.oldestFirstAll),
             groupBy = enumOf("groupBy", d.groupBy),
             autoNextFeed = sp.getBoolean("autoNextFeed", d.autoNextFeed),
             markAllAsk = sp.getBoolean("markAllAsk", d.markAllAsk),

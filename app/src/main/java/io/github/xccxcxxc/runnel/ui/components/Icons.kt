@@ -58,6 +58,7 @@ object RunnelIcons {
     val Search = stroke("search", "M10.5 4 A6.5 6.5 0 1 1 10.49 4 Z", "M15.3 15.3 L20 20")
     val ArrowUp = stroke("arrow-up", "M12 19.5 V5", "M6 11 L12 5 L18 11")
     val ArrowDown = stroke("arrow-down", "M12 4.5 V19", "M6 13 L12 19 L18 13")
+    val Sort = stroke("sort", "M8 4.5 V19.5", "M4.5 8 L8 4.5 L11.5 8", "M16 19.5 V4.5", "M12.5 16 L16 19.5 L19.5 16")
     val List = stroke("list", "M9 6.5 H20", "M9 12 H20", "M9 17.5 H20", "M4.5 6.5 H5", "M4.5 12 H5", "M4.5 17.5 H5")
 
     private const val STAR =

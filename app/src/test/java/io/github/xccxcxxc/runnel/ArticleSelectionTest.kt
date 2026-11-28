@@ -91,7 +91,7 @@ class ArticleSelectionTest {
         rule.setContent {
             RunnelTheme(graph.prefs.settings.value) {
                 CompositionLocalProvider(LocalAccount provides account, LocalNavEntry provides entry) {
-                    ArticleListScreen(ArticleSource.All, FilterMode.ALL, {}, { opened = it }, { _, _ -> })
+                    ArticleListScreen(ArticleSource.All, FilterMode.ALL, null, {}, { opened = it }, { _, _, _ -> })
                 }
             }
         }

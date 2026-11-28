@@ -19,6 +19,7 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker1D
 import io.github.xccxcxxc.runnel.data.AccountType
 import io.github.xccxcxxc.runnel.data.ArticleSource
 import io.github.xccxcxxc.runnel.data.FilterMode
+import io.github.xccxcxxc.runnel.data.SourceSequence
 import io.github.xccxcxxc.runnel.perf.PerfMonitor
 import io.github.xccxcxxc.runnel.ui.theme.Motion
 import kotlinx.coroutines.CancellationException
@@ -47,7 +48,12 @@ sealed interface Route {
     /** 账号列表（根页面，照 Reeder）。 */
     data object Accounts : Route
     data class Home(override val accountId: String) : Route
-    data class Articles(override val accountId: String, val source: ArticleSource, val filter: FilterMode) : Route
+    data class Articles(
+        override val accountId: String,
+        val source: ArticleSource,
+        val filter: FilterMode,
+        val sequence: SourceSequence? = null,
+    ) : Route
     data class Reader(override val accountId: String, val session: ReaderSession) : Route
     data class Search(override val accountId: String) : Route
 
@@ -73,6 +79,7 @@ class ReaderSession(
     startIndex: Int,
     source: ArticleSource = ArticleSource.All,
     val filter: FilterMode = FilterMode.ALL,
+    val sequence: SourceSequence? = null,
 ) {
     var ids by mutableStateOf(ids)
     var currentIndex by mutableIntStateOf(startIndex)

@@ -71,9 +71,11 @@ import io.github.xccxcxxc.runnel.AccountSession
 import io.github.xccxcxxc.runnel.AppGraph
 import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.Graph
+import io.github.xccxcxxc.runnel.data.ArticleSort
 import io.github.xccxcxxc.runnel.data.ArticleSource
 import io.github.xccxcxxc.runnel.data.FilterMode
 import io.github.xccxcxxc.runnel.data.GroupBy
+import io.github.xccxcxxc.runnel.data.SourceSequence
 import io.github.xccxcxxc.runnel.data.db.ArticleListItem
 import io.github.xccxcxxc.runnel.perf.PerfMonitor
 import io.github.xccxcxxc.runnel.sync.SyncState
@@ -85,6 +87,9 @@ import io.github.xccxcxxc.runnel.ui.components.FilterField
 import io.github.xccxcxxc.runnel.ui.components.LargeTitleList
 import io.github.xccxcxxc.runnel.ui.components.SwipeAction
 import io.github.xccxcxxc.runnel.ui.components.SwipeRow
+import io.github.xccxcxxc.runnel.ui.components.TopMenuItem
+import io.github.xccxcxxc.runnel.ui.components.TopMenuOverlay
+import io.github.xccxcxxc.runnel.ui.components.TopMenuSection
 import io.github.xccxcxxc.runnel.ui.components.pressHighlight
 import io.github.xccxcxxc.runnel.ui.dayLabel
 import io.github.xccxcxxc.runnel.ui.nav.LocalNavEntry
@@ -94,6 +99,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -123,6 +130,10 @@ class BuiltList(val items: List<ArticleListItem>, val rows: List<ListRow>) {
     }
 }
 
+/** 当前列表实际生效的排序和分组。 */
+@Immutable
+data class ListSortConfig(val sort: ArticleSort, val groupBy: GroupBy)
+
 /** 列表快照与“新文章”提示。快照打开后不随数据库变化重排，避免阅读时列表跳动。 */
 class ArticleListState(
     private val graph: AppGraph,
@@ -130,8 +141,11 @@ class ArticleListState(
     private val scope: CoroutineScope,
     val source: ArticleSource,
     initialFilter: FilterMode,
+    val sequence: SourceSequence? = null,
 ) {
     var filter by mutableStateOf(initialFilter)
+        private set
+    var sortConfig by mutableStateOf(resolveSortConfig(initialFilter))
         private set
     var built by mutableStateOf<BuiltList?>(null)
         private set
@@ -152,6 +166,12 @@ class ArticleListState(
     private var pendingRaw: List<ArticleListItem>? = null
     private var rebuild: Job? = null
 
+    private fun resolveSortConfig(mode: FilterMode = filter): ListSortConfig {
+        val global = graph.prefs.settings.value
+        val acct = account.prefs.settings.value
+        return ListSortConfig(acct.effectiveSort(source, mode, global), acct.effectiveGroupBy(source, global))
+    }
+
     init {
         reload()
         scope.launch {
@@ -165,19 +185,36 @@ class ArticleListState(
                 }
             }
         }
+        // 全局或当前来源的排序/分组变化时，立即基于当前快照重排（不查库）
+        scope.launch {
+            combine(graph.prefs.settings, account.prefs.settings, snapshotFlow { filter }) { global, acct, mode ->
+                ListSortConfig(acct.effectiveSort(source, mode, global), acct.effectiveGroupBy(source, global))
+            }.distinctUntilChanged().collect { cfg ->
+                val changed = cfg != sortConfig
+                sortConfig = cfg
+                if (changed) {
+                    val list = raw ?: return@collect
+                    rebuild?.cancel()
+                    rebuild = scope.launch { built = build(list, query, cfg) }
+                }
+            }
+        }
     }
 
     private fun reload() {
         scope.launch {
             val list = account.repo.loadList(source, filter)
             raw = list
-            built = build(list, query)
+            val cfg = resolveSortConfig(filter)
+            sortConfig = cfg
+            built = build(list, query, cfg)
         }
     }
 
     fun switchFilter(mode: FilterMode) {
         if (mode == filter) return
         filter = mode
+        sortConfig = resolveSortConfig(mode)
         built = null
         raw = null
         pendingRaw = null
@@ -192,7 +229,7 @@ class ArticleListState(
         newCount = 0
         raw = fresh
         rebuild?.cancel()
-        rebuild = scope.launch { built = build(fresh, query) }
+        rebuild = scope.launch { built = build(fresh, query, resolveSortConfig()) }
     }
 
     fun openFilter() {
@@ -211,7 +248,7 @@ class ArticleListState(
         rebuild = scope.launch {
             if (text.isNotBlank()) delay(120)
             val list = raw ?: return@launch // 还在载入：载入完成时会按当前 query 构建
-            built = build(list, text)
+            built = build(list, text, resolveSortConfig())
         }
     }
 
@@ -225,49 +262,52 @@ class ArticleListState(
     fun open(articleId: Long): ReaderSession? {
         val snapshot = built ?: return null
         val index = snapshot.itemIndex[articleId] ?: return null
-        val s = ReaderSession(snapshot.items.map { it.id }, index, source, filter)
+        val s = ReaderSession(snapshot.items.map { it.id }, index, source, filter, sequence)
         session = s
         return s
     }
 
-    private suspend fun build(all: List<ArticleListItem>, q: String): BuiltList = withContext(Dispatchers.Default) {
+    private suspend fun build(all: List<ArticleListItem>, q: String, cfg: ListSortConfig): BuiltList = withContext(Dispatchers.Default) {
         val list = filterItems(all, q)
-        // 数据库按时间从新到旧；“未读”默认从旧到新（可在设置里关）
-        val settings = graph.prefs.settings.value
-        val sorted = if (filter == FilterMode.UNREAD && settings.oldestFirstUnread) list.asReversed() else list
-        val rows = ArrayList<ListRow>(sorted.size + 32)
-        val ordered: List<ArticleListItem>
-        when (settings.groupBy) {
-            GroupBy.DATE -> {
-                ordered = sorted
-                var last: String? = null
-                for (a in ordered) {
-                    val label = dayLabel(a.publishedAt)
-                    if (label != last) {
-                        rows += ListRow.Header(label)
-                        last = label
-                    }
-                    rows += ListRow.Article(a)
-                }
-            }
-            GroupBy.FEED -> {
-                // 按订阅源分组：组按各自第一篇出现的顺序排，组内保持原顺序；阅读页翻页顺序和列表一致
-                val groups = sorted.groupBy { it.feedId }
-                ordered = groups.values.flatten()
-                for ((_, items) in groups) {
-                    rows += ListRow.Header(items.first().feedTitle)
-                    items.mapTo(rows) { ListRow.Article(it) }
-                }
-            }
-            GroupBy.NONE -> {
-                ordered = sorted
-                ordered.mapTo(rows) { ListRow.Article(it) }
-            }
-        }
-        BuiltList(ordered, rows)
+        buildOrdered(list, cfg.sort, cfg.groupBy)
     }
 
     companion object {
+        /** 按 [sort] 和 [groupBy] 构建有序列表与分组行（数据库返回新→旧）。 */
+        fun buildOrdered(list: List<ArticleListItem>, sort: ArticleSort, groupBy: GroupBy): BuiltList {
+            val sorted = if (sort == ArticleSort.OLDEST_FIRST) list.asReversed() else list
+            val rows = ArrayList<ListRow>(sorted.size + 32)
+            val ordered: List<ArticleListItem>
+            when (groupBy) {
+                GroupBy.DATE -> {
+                    ordered = sorted
+                    var last: String? = null
+                    for (a in ordered) {
+                        val label = dayLabel(a.publishedAt)
+                        if (label != last) {
+                            rows += ListRow.Header(label)
+                            last = label
+                        }
+                        rows += ListRow.Article(a)
+                    }
+                }
+                GroupBy.FEED -> {
+                    // 按订阅源分组：组按各自第一篇出现的顺序排，组内保持原顺序；阅读页翻页顺序和列表一致
+                    val groups = sorted.groupBy { it.feedId }
+                    ordered = groups.values.flatten()
+                    for ((_, items) in groups) {
+                        rows += ListRow.Header(items.first().feedTitle)
+                        items.mapTo(rows) { ListRow.Article(it) }
+                    }
+                }
+                GroupBy.NONE -> {
+                    ordered = sorted
+                    ordered.mapTo(rows) { ListRow.Article(it) }
+                }
+            }
+            return BuiltList(ordered, rows)
+        }
+
         /** 空格分隔的每个词都要出现在标题、摘要或订阅源名里（不分大小写）。 */
         fun filterItems(list: List<ArticleListItem>, query: String): List<ArticleListItem> {
             val words = query.lowercase().split(' ', '\u3000').filter { it.isNotEmpty() }
@@ -288,14 +328,15 @@ class ArticleListState(
 fun ArticleListScreen(
     source: ArticleSource,
     filter: FilterMode,
+    sequence: SourceSequence? = null,
     onBack: () -> Unit,
     onOpenArticle: (ReaderSession) -> Unit,
-    onReplace: (ArticleSource, FilterMode) -> Unit,
+    onReplace: (ArticleSource, FilterMode, SourceSequence?) -> Unit,
 ) {
     val graph = Graph.get()
     val entry = LocalNavEntry.current
     val account = LocalAccount.current
-    val state = entry.retain("list") { ArticleListState(graph, account, entry.scope, source, filter) }
+    val state = entry.retain("list") { ArticleListState(graph, account, entry.scope, source, filter, sequence) }
     val repo = account.repo
     val flags = repo.flags
     val sync by account.sync.state.collectAsStateWithLifecycle()
@@ -311,6 +352,7 @@ fun ArticleListScreen(
     val scope = rememberCoroutineScope()
     val colors = Runnel.colors
     var confirmMarkAll by remember { mutableStateOf(false) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
     val built = state.built
     // 数据到了、这一帧会排好首屏行：推入动画这才开始（Navigator.awaitOffscreenReady）
     if (built != null) SideEffect { entry.markContentReady() }
@@ -321,8 +363,8 @@ fun ArticleListScreen(
     if (accountSettings.markReadOnScroll && built != null) MarkReadOnScroll(listState, built.rows)
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
-    // 切换筛选或改了 Filter 文字后回到顶部（输入框在列表顶部）
-    LaunchedEffect(state.filter, state.query) { listState.scrollToItem(0) }
+    // 切换筛选、改 Filter 文字或改排序/分组后回到顶部
+    LaunchedEffect(state.filter, state.query, state.sortConfig) { listState.scrollToItem(0) }
 
     val unreadInList by remember(built) {
         derivedStateOf { built?.items?.count { !(flags.read[it.id] ?: it.isRead) } ?: 0 }
@@ -348,8 +390,8 @@ fun ArticleListScreen(
         } else null
         val current = state.filter
         graph.scope.launch {
-            val next = if (openNext) repo.nextSource(source, current) else null
-            if (next != null) onReplace(next, current) else onBack()
+            val next = if (openNext) repo.nextSource(source, current, sequence) else null
+            if (next != null) onReplace(next, current, sequence) else onBack()
             if (filtered != null) repo.setRead(filtered, true)
             else if (markRead) repo.markAllRead(source, before)
         }
@@ -431,6 +473,18 @@ fun ArticleListScreen(
             }
         },
         navigation = { BarButton(RunnelIcons.Back, "返回", onClick = onBack) },
+        actions = {
+            val overridden = accountSettings.hasListOverride(source)
+            BarButton(
+                icon = RunnelIcons.Sort,
+                contentDescription = "排序与分组",
+                tint = if (overridden) colors.accent else colors.icon,
+                modifier = Modifier.testTag("list_sort_button"),
+            ) {
+                focusManager.clearFocus()
+                sortMenuOpen = true
+            }
+        },
         refreshing = sync is SyncState.Running,
         onRefresh = { account.sync.requestSync() },
         bottomBar = {
@@ -543,6 +597,68 @@ fun ArticleListScreen(
                     }
                 }
             }
+            val effectiveSort = accountSettings.effectiveSort(source, state.filter, settings)
+            val effectiveGroup = accountSettings.effectiveGroupBy(source, settings)
+            val hasOverride = accountSettings.hasListOverride(source)
+            val scopeLabel = when (source) {
+                ArticleSource.All -> "仅当前列表"
+                is ArticleSource.Folder -> "仅此文件夹"
+                is ArticleSource.Feed -> "仅此订阅源"
+            }
+            val sortSections = buildList {
+                add(
+                    TopMenuSection(
+                        title = if (hasOverride) "排序 · $scopeLabel" else "排序 · 跟随全局",
+                        items = listOf(
+                            ArticleSort.NEWEST_FIRST to "最新优先",
+                            ArticleSort.OLDEST_FIRST to "最旧优先",
+                        ).map { (option, label) ->
+                            TopMenuItem(label = label, checked = effectiveSort == option) {
+                                account.prefs.update { it.withSourceSort(source, option) }
+                            }
+                        },
+                    ),
+                )
+                add(
+                    TopMenuSection(
+                        title = "分组",
+                        items = listOf(
+                            GroupBy.DATE to "按日期",
+                            GroupBy.FEED to "按订阅源",
+                            GroupBy.NONE to "不分组",
+                        ).map { (option, label) ->
+                            TopMenuItem(label = label, checked = effectiveGroup == option) {
+                                account.prefs.update { it.withSourceGroupBy(source, option) }
+                            }
+                        },
+                    ),
+                )
+                if (hasOverride) {
+                    add(
+                        TopMenuSection(
+                            items = listOf(
+                                TopMenuItem(label = "设为全局默认", accent = true) {
+                                    val liveMode = state.filter
+                                    val liveGlobal = graph.prefs.settings.value
+                                    val liveAcct = account.prefs.settings.value
+                                    val curSort = liveAcct.effectiveSort(source, liveMode, liveGlobal)
+                                    val curGroup = liveAcct.effectiveGroupBy(source, liveGlobal)
+                                    val oldest = curSort == ArticleSort.OLDEST_FIRST
+                                    graph.prefs.updateSettings {
+                                        if (liveMode == FilterMode.UNREAD) it.copy(oldestFirstUnread = oldest, groupBy = curGroup)
+                                        else it.copy(oldestFirstAll = oldest, groupBy = curGroup)
+                                    }
+                                    account.prefs.update { it.clearListOverride(source) }
+                                },
+                                TopMenuItem(label = "恢复全局默认") {
+                                    account.prefs.update { it.clearListOverride(source) }
+                                },
+                            ),
+                        ),
+                    )
+                }
+            }
+            TopMenuOverlay(visible = sortMenuOpen, sections = sortSections, onDismiss = { sortMenuOpen = false })
         },
     ) {
         if (built != null && built.items.isEmpty()) {
@@ -696,11 +812,15 @@ private fun FollowReader(state: ArticleListState, listState: LazyListState) {
 private fun MarkReadOnScroll(listState: LazyListState, rows: List<ListRow>) {
     val repo = LocalAccount.current.repo
     LaunchedEffect(listState, rows) {
-        var marked = 0 // rows 里已处理到的下标
+        var marked = (listState.firstVisibleItemIndex - 1).coerceIn(0, rows.size) // rows 里已处理到的下标
         snapshotFlow { listState.firstVisibleItemIndex }
             .collect { first ->
                 // 第 0 项是大标题；rows 里下标 < first - 1 的行已完全滑出顶部
                 val passed = (first - 1).coerceIn(0, rows.size)
+                if (passed < marked) {
+                    marked = passed
+                    return@collect
+                }
                 if (passed - marked < 3) return@collect
                 val ids = rows.subList(marked, passed)
                     .mapNotNull { (it as? ListRow.Article)?.item }

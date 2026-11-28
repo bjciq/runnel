@@ -50,7 +50,7 @@ class AccountSession(graph: AppGraph, initial: Account) {
 
     val offlineImages = OfflineImages(db, prefs, { graph.readerImages }, scope)
     val sync = SyncEngine(db, prefs, backend, graph.http, scope, afterSync = { offlineImages.requestPrefetch() })
-    val repo = ArticleRepository(db, graph.prefs, flags, sync, graph.fullText)
+    val repo = ArticleRepository(db, graph.prefs, prefs, flags, sync, graph.fullText)
 
     /** 本机账号才能导入 OPML（服务器账号在服务器上导入）。 */
     val canImportOpml: Boolean get() = localBackend != null

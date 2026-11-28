@@ -287,7 +287,7 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
     // 读到最后一篇时，如果开了“读完后进入下一个订阅源”，找出下一个来源
     val nextSource by produceState<ArticleSource?>(null, pagerState.currentPage, session.source, settings.autoNextFeed) {
         value = if (settings.autoNextFeed && pagerState.currentPage == session.ids.size - 1) {
-            account.repo.nextSource(session.source, session.filter)
+            account.repo.nextSource(session.source, session.filter, session.sequence)
         } else {
             null
         }
