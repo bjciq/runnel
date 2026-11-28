@@ -61,9 +61,34 @@ data class AccountSettings(
     val offlineImageFeeds: Set<String> = emptySet(),
     val markReadOnOpen: Boolean = true,
     val markReadOnScroll: Boolean = false,
+    /** 单个来源（订阅源/文件夹/全部）独立的文章排序覆盖；未设置时跟随全局默认。 */
+    val sourceSort: Map<String, ArticleSort> = emptyMap(),
+    /** 单个来源独立的文章分组方式覆盖；未设置时跟随全局默认。 */
+    val sourceGroupBy: Map<String, GroupBy> = emptyMap(),
 ) {
     /** 这个订阅源的文章是否默认用 Reader View（全文）打开；旧版全局 Readability 等于全选。 */
     fun autoReaderView(feedId: String): Boolean = readerView == ReaderView.READABILITY || feedId in readerViewFeeds
+
+    fun effectiveSort(source: ArticleSource, filter: FilterMode, global: Settings): ArticleSort =
+        sourceSort[source.overrideKey] ?: when (filter) {
+            FilterMode.UNREAD -> if (global.oldestFirstUnread) ArticleSort.OLDEST_FIRST else ArticleSort.NEWEST_FIRST
+            FilterMode.STARRED, FilterMode.ALL -> if (global.oldestFirstAll) ArticleSort.OLDEST_FIRST else ArticleSort.NEWEST_FIRST
+        }
+
+    fun effectiveGroupBy(source: ArticleSource, global: Settings): GroupBy =
+        sourceGroupBy[source.overrideKey] ?: global.groupBy
+
+    fun hasListOverride(source: ArticleSource): Boolean =
+        source.overrideKey in sourceSort || source.overrideKey in sourceGroupBy
+
+    fun withSourceSort(source: ArticleSource, sort: ArticleSort?): AccountSettings =
+        copy(sourceSort = if (sort == null) sourceSort - source.overrideKey else sourceSort + (source.overrideKey to sort))
+
+    fun withSourceGroupBy(source: ArticleSource, groupBy: GroupBy?): AccountSettings =
+        copy(sourceGroupBy = if (groupBy == null) sourceGroupBy - source.overrideKey else sourceGroupBy + (source.overrideKey to groupBy))
+
+    fun clearListOverride(source: ArticleSource): AccountSettings =
+        copy(sourceSort = sourceSort - source.overrideKey, sourceGroupBy = sourceGroupBy - source.overrideKey)
 }
 
 /** 一个账号的设置和同步进度，存在 `acct_<id>` 文件里。 */
@@ -106,6 +131,8 @@ class AccountPrefs(private val sp: SharedPreferences) {
                 offlineImageFeeds = sp.getStringSet("offlineImageFeeds", null)?.toSet() ?: d.offlineImageFeeds,
                 markReadOnOpen = sp.getBoolean("markReadOnOpen", d.markReadOnOpen),
                 markReadOnScroll = sp.getBoolean("markReadOnScroll", d.markReadOnScroll),
+                sourceSort = readEnumMap(sp, "sourceSort", ArticleSort.entries.toTypedArray()),
+                sourceGroupBy = readEnumMap(sp, "sourceGroupBy", GroupBy.entries.toTypedArray()),
             )
         }
 
@@ -119,6 +146,25 @@ class AccountPrefs(private val sp: SharedPreferences) {
             putStringSet("offlineImageFeeds", s.offlineImageFeeds)
             putBoolean("markReadOnOpen", s.markReadOnOpen)
             putBoolean("markReadOnScroll", s.markReadOnScroll)
+            putStringSet("sourceSort", writeEnumMap(s.sourceSort))
+            putStringSet("sourceGroupBy", writeEnumMap(s.sourceGroupBy))
         }
+
+        private fun <E : Enum<E>> readEnumMap(sp: SharedPreferences, key: String, values: Array<E>): Map<String, E> {
+            val raw = sp.getStringSet(key, null) ?: return emptyMap()
+            val out = LinkedHashMap<String, E>(raw.size)
+            for (entry in raw) {
+                val sep = entry.indexOf('\t')
+                if (sep <= 0) continue
+                val enumName = entry.substring(0, sep)
+                val sourceKey = entry.substring(sep + 1)
+                val value = values.firstOrNull { it.name == enumName } ?: continue
+                if (sourceKey.isNotEmpty()) out[sourceKey] = value
+            }
+            return out
+        }
+
+        private fun <E : Enum<E>> writeEnumMap(map: Map<String, E>): Set<String> =
+            map.entries.mapTo(HashSet(map.size)) { (k, v) -> "${v.name}\t$k" }
     }
 }

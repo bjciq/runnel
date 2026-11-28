@@ -160,7 +160,7 @@ private fun RunnelRoot(activity: MainActivity, autoDemo: Boolean) {
                         when (route) {
                             is Route.Home -> HomeScreen(
                                 onBack = navigator::pop,
-                                onOpen = { source, filter -> navigator.push(Route.Articles(accountId, source, filter)) },
+                                onOpen = { source, filter, sequence -> navigator.push(Route.Articles(accountId, source, filter, sequence)) },
                                 onSearch = { navigator.push(Route.Search(accountId)) },
                                 onAdd = { sheet.show(Sheet.AddFeed(accountId)) },
                                 onEditFeed = { sheet.show(Sheet.EditFeed(accountId, it)) },
@@ -168,9 +168,10 @@ private fun RunnelRoot(activity: MainActivity, autoDemo: Boolean) {
                             is Route.Articles -> ArticleListScreen(
                                 source = route.source,
                                 filter = route.filter,
+                                sequence = route.sequence,
                                 onBack = navigator::pop,
                                 onOpenArticle = { navigator.push(Route.Reader(accountId, it)) },
-                                onReplace = { source, filter -> navigator.replaceTop(Route.Articles(accountId, source, filter)) },
+                                onReplace = { source, filter, sequence -> navigator.replaceTop(Route.Articles(accountId, source, filter, sequence)) },
                             )
                             is Route.Reader -> ReaderScreen(route.session, onBack = navigator::pop)
                             is Route.Search -> SearchScreen(

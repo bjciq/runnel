@@ -38,14 +38,19 @@ import io.github.xccxcxxc.runnel.AccountSession
 import io.github.xccxcxxc.runnel.Graph
 import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.data.ArticleSource
+import io.github.xccxcxxc.runnel.data.FeedOrdering
 import io.github.xccxcxxc.runnel.data.FilterMode
 import io.github.xccxcxxc.runnel.data.SortSubs
+import io.github.xccxcxxc.runnel.data.SourceSequence
 import io.github.xccxcxxc.runnel.sync.SyncState
 import io.github.xccxcxxc.runnel.ui.components.BarButton
 import io.github.xccxcxxc.runnel.ui.components.RunnelIcons
 import io.github.xccxcxxc.runnel.ui.components.FeedIcon
 import io.github.xccxcxxc.runnel.ui.components.FilterBottomBar
 import io.github.xccxcxxc.runnel.ui.components.LargeTitleList
+import io.github.xccxcxxc.runnel.ui.components.TopMenuItem
+import io.github.xccxcxxc.runnel.ui.components.TopMenuOverlay
+import io.github.xccxcxxc.runnel.ui.components.TopMenuSection
 import io.github.xccxcxxc.runnel.ui.components.pressHighlight
 import io.github.xccxcxxc.runnel.ui.nav.LocalNavEntry
 import io.github.xccxcxxc.runnel.ui.syncedAgo
@@ -66,12 +71,17 @@ data class FolderRow(val id: String, val title: String, val count: Int, val feed
 @Immutable
 data class HomeModel(
     val filter: FilterMode,
+    val sortSubs: SortSubs,
     val total: Int,
     val folders: List<FolderRow>,
     val looseFeeds: List<FeedRow>,
     val loaded: Boolean,
     /** 订阅源（未归类）排在文件夹前面（设置 → 账号 → 订阅源排序 = 订阅源优先）。 */
     val feedsFirst: Boolean = false,
+    /** 首页从上到下的订阅源 id 顺序（用于“下一个订阅源”保持与首页一致）。 */
+    val orderedFeedIds: List<String> = emptyList(),
+    /** 首页从上到下的文件夹 id 顺序。 */
+    val orderedFolderIds: List<String> = emptyList(),
 )
 
 class HomeState(session: AccountSession, scope: CoroutineScope) {
@@ -83,39 +93,39 @@ class HomeState(session: AccountSession, scope: CoroutineScope) {
     val model: StateFlow<HomeModel> = combine(
         session.repo.folders, session.repo.feeds, session.repo.counts(filter), filter, session.prefs.settings,
     ) { folders, feeds, counts, mode, settings ->
-        val hideEmpty = mode != FilterMode.ALL
-        val rows = feeds.map { FeedRow(it.id, it.title, it.iconUrl ?: it.localIcon?.takeIf(String::isNotEmpty), it.siteUrl, counts[it.id] ?: 0) }
-            .filter { !hideEmpty || it.count > 0 }
-        val folderOf = feeds.associate { it.id to it.folderId }
-        val byFolder = rows.groupBy { folderOf[it.id] }
-        var folderRows = folders.mapNotNull { f ->
-            val list = byFolder[f.id].orEmpty()
-            if (list.isEmpty()) null else FolderRow(f.id, f.title, list.sumOf { it.count }, list)
+        val ordered = FeedOrdering.order(
+            folders = folders,
+            feeds = feeds,
+            counts = counts,
+            sortSubs = settings.sortSubs,
+            hideEmpty = mode != FilterMode.ALL,
+        )
+        fun toRow(f: io.github.xccxcxxc.runnel.data.db.FeedEntity) = FeedRow(
+            f.id, f.title, f.iconUrl ?: f.localIcon?.takeIf(String::isNotEmpty), f.siteUrl, counts[f.id] ?: 0,
+        )
+        val folderRows = ordered.folders.map { of ->
+            FolderRow(of.folder.id, of.folder.title, of.count, of.feeds.map(::toRow))
         }
-        val folderIds = folders.mapTo(HashSet()) { it.id }
-        var loose = rows.filter { folderOf[it.id] == null || folderOf[it.id] !in folderIds }
-        // 订阅源排序：按名称 / 按未读数；“文件夹优先”“订阅源优先”保持服务端顺序，只是两段谁在前
-        when (settings.sortSubs) {
-            SortSubs.ALPHA -> {
-                val byName = compareBy<String> { it.lowercase() }
-                folderRows = folderRows.map { it.copy(feeds = it.feeds.sortedWith(compareBy(byName) { f -> f.title })) }.sortedWith(compareBy(byName) { it.title })
-                loose = loose.sortedWith(compareBy(byName) { it.title })
-            }
-            SortSubs.UNREAD -> {
-                folderRows = folderRows.map { it.copy(feeds = it.feeds.sortedByDescending { f -> f.count }) }.sortedByDescending { it.count }
-                loose = loose.sortedByDescending { it.count }
-            }
-            SortSubs.FEEDS_FIRST, SortSubs.FOLDERS_FIRST -> Unit
-        }
-        HomeModel(mode, counts.values.sum(), folderRows, loose, loaded = true, feedsFirst = settings.sortSubs == SortSubs.FEEDS_FIRST)
-    }.stateIn(scope, SharingStarted.Eagerly, HomeModel(FilterMode.UNREAD, 0, emptyList(), emptyList(), loaded = false))
+        val looseRows = ordered.loose.map(::toRow)
+        HomeModel(
+            filter = mode,
+            sortSubs = settings.sortSubs,
+            total = counts.values.sum(),
+            folders = folderRows,
+            looseFeeds = looseRows,
+            loaded = true,
+            feedsFirst = ordered.feedsFirst,
+            orderedFeedIds = ordered.orderedFeeds.map { it.id },
+            orderedFolderIds = ordered.orderedFolders.map { it.id },
+        )
+    }.stateIn(scope, SharingStarted.Eagerly, HomeModel(FilterMode.UNREAD, SortSubs.FOLDERS_FIRST, 0, emptyList(), emptyList(), loaded = false))
 }
 
 /** 一个账号的首页：全部未读/星标/文章、文件夹和订阅源。长按订阅源 → 编辑、取消订阅（[onEditFeed]）。 */
 @Composable
 fun HomeScreen(
     onBack: () -> Unit,
-    onOpen: (ArticleSource, FilterMode) -> Unit,
+    onOpen: (ArticleSource, FilterMode, SourceSequence?) -> Unit,
     onSearch: () -> Unit,
     onAdd: () -> Unit,
     onEditFeed: (String) -> Unit,
@@ -147,6 +157,7 @@ fun HomeScreen(
     val showFavicons = settings.showFavicons
     val listState = rememberLazyListState()
     val colors = Runnel.colors
+    var sortMenuOpen by remember { mutableStateOf(false) }
 
     val title = account.displayName
     val subtitle = when (val s = sync) {
@@ -162,12 +173,35 @@ fun HomeScreen(
         listModifier = Modifier.testTag("home_list"),
         navigation = { BarButton(RunnelIcons.Back, "账号", onClick = onBack) },
         actions = {
+            BarButton(RunnelIcons.Sort, "订阅源排序", modifier = Modifier.testTag("home_sort_button")) { sortMenuOpen = true }
             BarButton(RunnelIcons.Search, "搜索", onClick = onSearch)
             if (canManage) BarButton(RunnelIcons.Plus, "添加订阅", onClick = onAdd)
         },
         refreshing = sync is SyncState.Running,
         onRefresh = { session.sync.requestSync() },
         bottomBar = { FilterBottomBar(model.filter, onChange = { state.filter.value = it }) },
+        overlay = {
+            val currentSort = session.prefs.settings.collectAsStateWithLifecycle().value.sortSubs
+            TopMenuOverlay(
+                visible = sortMenuOpen,
+                sections = listOf(
+                    TopMenuSection(
+                        title = "订阅源排序",
+                        items = listOf(
+                            SortSubs.FOLDERS_FIRST to "文件夹优先",
+                            SortSubs.FEEDS_FIRST to "订阅源优先",
+                            SortSubs.ALPHA to "按名称",
+                            SortSubs.UNREAD to "按未读数",
+                        ).map { (option, label) ->
+                            TopMenuItem(label = label, checked = currentSort == option) {
+                                session.prefs.update { it.copy(sortSubs = option) }
+                            }
+                        },
+                    ),
+                ),
+                onDismiss = { sortMenuOpen = false },
+            )
+        },
     ) {
         item(key = "all", contentType = "source") {
             SourceRow(
@@ -178,7 +212,7 @@ fun HomeScreen(
                 },
                 count = if (showCounts) model.total else 0,
                 modifier = Modifier.testTag("row_all"),
-            ) { onOpen(ArticleSource.All, model.filter) }
+            ) { onOpen(ArticleSource.All, model.filter, null) }
         }
         if (model.loaded && model.folders.isEmpty() && model.looseFeeds.isEmpty()) {
             item(key = "empty", contentType = "empty") {
@@ -210,14 +244,18 @@ fun HomeScreen(
                             showCount = showCounts,
                             expanded = open,
                             onToggle = { state.collapsed[folder.id] = open },
-                            onClick = { onOpen(ArticleSource.Folder(folder.id, folder.title), model.filter) },
+                            onClick = {
+                                val m = state.model.value
+                                onOpen(ArticleSource.Folder(folder.id, folder.title), m.filter, SourceSequence(m.filter, m.sortSubs, m.orderedFolderIds))
+                            },
                         )
                     }
                     if (open) {
                         for (feed in folder.feeds) {
                             item(key = "feed:${folder.id}:${feed.id}", contentType = "feed") {
                                 FeedRowView(feed, indent = true, showCount = showCounts, showFavicon = showFavicons, onLongClick = if (canManage) ({ editFeed(feed.id) }) else null) {
-                                    onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter)
+                                    val m = state.model.value
+                                    onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), m.filter, SourceSequence(m.filter, m.sortSubs, m.orderedFeedIds))
                                 }
                             }
                         }
@@ -231,7 +269,8 @@ fun HomeScreen(
                 for (feed in model.looseFeeds) {
                     item(key = "feed:${feed.id}", contentType = "feed") {
                         FeedRowView(feed, indent = false, showCount = showCounts, showFavicon = showFavicons, onLongClick = if (canManage) ({ editFeed(feed.id) }) else null) {
-                            onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter)
+                            val m = state.model.value
+                            onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), m.filter, SourceSequence(m.filter, m.sortSubs, m.orderedFeedIds))
                         }
                     }
                 }

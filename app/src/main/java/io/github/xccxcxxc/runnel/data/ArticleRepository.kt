@@ -23,20 +23,30 @@ enum class FilterMode { STARRED, UNREAD, ALL }
 @Immutable
 sealed interface ArticleSource {
     val title: String
+    /** 用于按来源独立保存排序/分组覆盖的稳定键。 */
+    val overrideKey: String
 
     data object All : ArticleSource {
         override val title = "全部"
+        override val overrideKey = "all"
     }
 
-    data class Folder(val id: String, override val title: String) : ArticleSource
-    data class Feed(val id: String, override val title: String, val iconUrl: String?) : ArticleSource
+    data class Folder(val id: String, override val title: String) : ArticleSource {
+        override val overrideKey: String get() = "folder:$id"
+    }
+
+    data class Feed(val id: String, override val title: String, val iconUrl: String?) : ArticleSource {
+        override val overrideKey: String get() = "feed:$id"
+    }
 }
 
 /** 一个账号的文章读写（列表快照、已读/星标、全文）。 */
 class ArticleRepository(
     private val db: RunnelDatabase,
-    /** 全 App 的设置（未读排序）。 */
+    /** 全 App 的设置（全局默认排序/分组）。 */
     private val prefs: Prefs,
+    /** 当前账号的设置（订阅源排序、按来源覆盖的文章排序/分组）。 */
+    private val accountPrefs: AccountPrefs,
     val flags: FlagStore,
     private val sync: SyncEngine,
     private val fullText: FullTextFetcher,
@@ -75,42 +85,49 @@ class ArticleRepository(
             )
         }
 
-    /** 与列表页相同的排序：数据库是新→旧，“未读”默认旧→新。 */
+    /** 与列表页相同的排序（含单个来源覆盖与按订阅源分组）：数据库是新→旧。 */
     suspend fun loadOrdered(source: ArticleSource, filter: FilterMode): List<ArticleListItem> {
         val list = loadList(source, filter)
-        return if (filter == FilterMode.UNREAD && prefs.settings.value.oldestFirstUnread) list.asReversed() else list
+        val acct = accountPrefs.settings.value
+        val global = prefs.settings.value
+        val sort = acct.effectiveSort(source, filter, global)
+        val groupBy = acct.effectiveGroupBy(source, global)
+        val sorted = if (sort == ArticleSort.OLDEST_FIRST) list.asReversed() else list
+        return if (groupBy == GroupBy.FEED) sorted.groupBy { it.feedId }.values.flatten() else sorted
     }
 
     /**
-     * 下一个“有内容”的来源，顺序和首页一致（文件夹按顺序，文件夹内订阅源按顺序，最后是未归类订阅源）。
+     * 下一个“有内容”的来源，顺序和首页完全一致（遵守账号的订阅源排序，以及从首页带入的 [sequence]）。
      * 当前是订阅源 → 下一个订阅源（可以跨文件夹）；当前是文件夹 → 下一个文件夹；“全部”没有下一个。
      */
-    suspend fun nextSource(current: ArticleSource, filter: FilterMode): ArticleSource? {
+    suspend fun nextSource(
+        current: ArticleSource,
+        filter: FilterMode,
+        sequence: SourceSequence? = null,
+    ): ArticleSource? {
         if (current is ArticleSource.All) return null
-        val counts = when (filter) {
+        val hasCounts = when (filter) {
             FilterMode.UNREAD -> articleDao.observeUnreadCounts()
             FilterMode.STARRED -> articleDao.observeStarredCounts()
             FilterMode.ALL -> articleDao.observeAllCounts()
         }.first().associate { it.feedId to it.cnt }
-        val folders = feedDao.observeFolders().first()
-        val feeds = feedDao.allFeeds().sortedWith(compareBy({ it.sortIndex }, { it.title.lowercase() }))
-        val byFolder = feeds.groupBy { it.folderId }
-        val folderIds = folders.mapTo(HashSet()) { it.id }
-        fun has(f: io.github.xccxcxxc.runnel.data.db.FeedEntity) = (counts[f.id] ?: 0) > 0
-        return when (current) {
-            is ArticleSource.Feed -> {
-                val ordered = folders.flatMap { byFolder[it.id].orEmpty() } +
-                    feeds.filter { it.folderId == null || it.folderId !in folderIds }
-                val i = ordered.indexOfFirst { it.id == current.id }
-                ordered.drop(i + 1).firstOrNull(::has)?.let { ArticleSource.Feed(it.id, it.title, it.iconUrl) }
-            }
-            is ArticleSource.Folder -> {
-                val i = folders.indexOfFirst { it.id == current.id }
-                folders.drop(i + 1).firstOrNull { f -> byFolder[f.id].orEmpty().any(::has) }
-                    ?.let { ArticleSource.Folder(it.id, it.title) }
-            }
-            ArticleSource.All -> null
+        val sortCounts = when (filter) {
+            FilterMode.UNREAD -> hasCounts
+            FilterMode.STARRED -> hasCounts
+            FilterMode.ALL -> articleDao.observeUnreadCounts().first().associate { it.feedId to it.cnt }
         }
+        val folders = feedDao.observeFolders().first()
+        val feeds = feedDao.allFeeds()
+        return FeedOrdering.nextSource(
+            current = current,
+            filter = filter,
+            folders = folders,
+            feeds = feeds,
+            hasCounts = hasCounts,
+            sortCounts = sortCounts,
+            sortSubs = accountPrefs.settings.value.sortSubs,
+            sequence = sequence,
+        )
     }
 
     /** 标题/摘要子串搜索（中文没有分词，FTS 匹配不到，用 LIKE；几千篇的量足够快）。 */

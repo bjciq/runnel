@@ -413,9 +413,13 @@ private fun GeneralPage() {
             prefs.updateSettings { it.copy(openLinks = v) }
         }
     }
-    GroupedSection("文章列表", footer = "排序和分组在下次打开列表时生效。") {
+    GroupedSection("文章列表", footer = "排序和分组会立即生效；在文章列表右上角也可以针对单个订阅源或文件夹单独覆盖。") {
         PickerRow("未读文章排序", listOf(true to "最旧优先", false to "最新优先"), settings.oldestFirstUnread) { v ->
             prefs.updateSettings { it.copy(oldestFirstUnread = v) }
+        }
+        RowDivider()
+        PickerRow("全部与星标排序", listOf(false to "最新优先", true to "最旧优先"), settings.oldestFirstAll) { v ->
+            prefs.updateSettings { it.copy(oldestFirstAll = v) }
         }
         RowDivider()
         PickerRow("分组方式", listOf(GroupBy.DATE to "日期", GroupBy.FEED to "订阅源", GroupBy.NONE to "不分组"), settings.groupBy) { v ->
